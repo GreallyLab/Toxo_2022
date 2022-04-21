@@ -1,0 +1,663 @@
+---
+title: "Differential expression analysis of toxoplasma infection in toxoplasma gondii"
+author: "Ronald Cutler"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+## Loading libraries
+
+```{r, message=FALSE}
+library(DESeq2)
+library(vsn)
+library(affy)
+library(ggplot2)
+library(ggrepel)
+library(factoextra)
+library(FactoMineR)
+library(reshape2)
+library(biomaRt)
+library(EnhancedVolcano)
+library(viridis)
+library(ComplexHeatmap)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(corrplot)
+library(PerformanceAnalytics)
+library(pheatmap)
+library(mgsa)
+
+
+colors <- viridis(5)[c(1,5)]
+```
+
+## Loading RNA-Seq quantification
+
+```{r}
+directory <- "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/RNA-Seq/Quantification"
+
+files <- list.files(path = directory, pattern = "2cols", all.files = FALSE,
+           full.names = FALSE, recursive = FALSE,
+           ignore.case = FALSE, include.dirs = FALSE, no.. = FALSE)
+
+sampleTable <- data.frame(sampleName = c("I1", "I2", "I3", "U1", "U2", "U3"), fileName = files, condition = c(rep(c("Infected", "Uninfected"), each = 3)))
+rownames(sampleTable) <- c("I1", "I2", "I3", "U1", "U2", "U3")
+sampleTable$sampleName <- factor(sampleTable$sampleName)
+sampleTable$condition <- factor(sampleTable$condition)
+
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                       directory = directory,
+                                       design = ~1)
+```
+
+Plot count distribution
+
+```{r}
+barplot(colSums(counts(dds)),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Counts",
+        main = "Total Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+barplot(colSums(counts(dds)>0),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Unique Genes",
+        main = "Genes detected")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+
+# plotting an unnormalized density plot of the log transformed counts 
+plotDensity(log2(counts(dds) + 1),
+            lty=1,
+            col=colors[sampleTable$sampleName],
+            lwd=1,
+            xlab = "log2(Counts + 1)", 
+            main = "Raw Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = colors)
+
+# plotting an unnormalized box plot of the log transformed counts 
+boxplot(log2(counts(dds) + 1),
+        col = colors[sampleTable$sampleName],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Raw Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = colors)
+```
+
+### Remove uninfected
+
+-   Here we have very little counts in the uninfected condition, so we
+    cannot perform differential expression. What we can do here is
+    simply profile the infected replicates.
+
+```{r}
+files <- list.files(path = directory, pattern = "2cols", all.files = FALSE,
+           full.names = FALSE, recursive = FALSE,
+           ignore.case = FALSE, include.dirs = FALSE, no.. = FALSE)[1:3]
+
+sampleTable <- data.frame(sampleName = c("I1", "I2", "I3"), fileName = files, condition = c(rep("Infected", 3)))
+rownames(sampleTable) <- c("I1", "I2", "I3")
+sampleTable$sampleName <- factor(sampleTable$sampleName)
+sampleTable$condition <- factor(sampleTable$condition)
+
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                       directory = directory,
+                                       design = ~1)
+
+write.csv(counts(dds), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/RNA-Seq/Differential\ Expression/DESeq2_raw_counts_RNA.csv")
+```
+
+Plot count distribution
+
+```{r}
+barplot(colSums(counts(dds)),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Counts",
+        ylab = "Samples",
+        main = "Total Counts")
+
+barplot(colSums(counts(dds)>3),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Unique Genes",
+        main = "Total Genes")
+
+# plotting an unnormalized density plot of the log transformed counts 
+plotDensity(log2(counts(dds) + 1),
+            lty=1,
+            col= c("#0073C2FF", "#EFC000FF", "#868686FF"),
+            lwd=1,
+            xlab = "log2(Counts + 1)", 
+            main = "Raw Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = c("#0073C2FF", "#EFC000FF", "#868686FF"))
+
+# plotting an unnormalized box plot of the log transformed counts 
+boxplot(log2(counts(dds) + 1),
+        col = colors[sampleTable$sampleName],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Raw Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = colors)
+```
+
+Genes detected among replicates
+
+-   A detected gene has at least 3 counts
+-   Total genes is 8925
+
+```{r}
+library(plyr)
+
+# total number of genes in annotation
+nrow(counts(dds))
+
+# total amount of unique genes detected among all replicates
+detect <- apply(counts(dds), 2, function(x) sum(x > 3))
+undetect <- nrow(counts(dds)) - detect
+df <- data.frame(Undetected = undetect, Detected = detect, sample = colnames(counts(dds)))
+df <- melt(df, id.vars = 'sample')
+# stacked bar
+ggplot(data=df, aes(x=sample, y=value, fill=variable)) +
+  geom_bar(stat="identity")+
+  scale_fill_brewer(palette="Paired")+
+  theme_classic(base_size = 25)+
+  xlab("Replicate")+
+  ylab("# Genes")+
+  theme(legend.title = element_blank(),
+        legend.position="top")
+
+# shared among replicates
+library(ggvenn)
+x <- list(I1 = rownames(counts(dds)[counts(dds)[,1] > 3,]),
+          I2 = rownames(counts(dds)[counts(dds)[,2] > 3,]),
+          I3 = rownames(counts(dds)[counts(dds)[,3] > 3,]))
+ggvenn(
+  x, 
+  fill_color = c("red", "green", "blue"),
+  stroke_size = 0.5, set_name_size = 7
+  )
+```
+
+# Pre-processing
+
+## Filtering low counts
+
+Keeping genes that have at least 3 counts in 2/3 of the samples. This is
+an arbitrary but minimal count filter. We are left with 6653 genes to
+work with.
+
+```{r}
+# length before
+before_len <- length(row.names(dds))
+
+# filtering if any sample contains less than 3 counts
+dds_filter <- dds[rowSums(counts(dds) > 3) >= 2,]
+
+# length after
+after_len <- length(row.names(dds_filter))
+
+# amount filtered
+before_len - after_len
+
+# plot before and after length
+barplot(c(before_len, after_len), xlab = "Filtering", ylab = "Amount of genes", col = colors)
+
+# for each column (sample) count the number of counts less than or equal to ten, get the proportion with the mean() function, and then multiply this by 100
+proportion_10 <- apply(counts(dds_filter), MARGIN = 2, function(x) 100*mean(x<= 10))
+
+# plot a barplot where the colors correspond to the condition
+barplot(proportion_10,
+        horiz = TRUE,
+        las = 1,
+        cex.names = 0.5,
+        col = colors[colData(dds)$condition],
+       ylab='Samples',
+       xlab='% of counts less than 10',
+       main="Percentage of counts less than 10 per sample")
+
+
+```
+
+Unnomarlized count distribution
+
+```{r}
+# plotting an unnormalized density plot of the log transformed counts 
+plotDensity(log2(counts(dds_filter) + 1),
+            lty=1,
+            col=c("#0073C2FF", "#EFC000FF", "#868686FF"),
+            lwd=1,
+            xlab = "log2(Counts + 1)", 
+            main = "Filtered Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = c("#0073C2FF", "#EFC000FF", "#868686FF"))
+
+# plotting an unnormalized box plot of the log transformed counts 
+boxplot(log2(counts(dds_filter) + 1),
+        col = colors[sampleTable$sampleName],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Filtered Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = colors)
+```
+
+```{r}
+# total counts 
+barplot(colSums(counts(dds_filter)),
+        horiz = TRUE,
+        las = 1,
+        cex.names = 1,
+        col = colors[colData(dds)$condition],
+       ylab='Samples',
+       xlab='Total counts')
+
+# total genes
+barplot(colSums(counts(dds_filter)> 3),
+        horiz = TRUE,
+        las = 1,
+        cex.names = 1,
+        col = colors[colData(dds)$condition],
+       ylab='Samples',
+       xlab='Total genes')
+
+# total amount of unique genes detected among all replicates
+detect <- apply(counts(dds_filter), 2, function(x) sum(x > 3))
+undetect <- nrow(counts(dds)) - detect
+df <- data.frame(Undetected = undetect, Detected = detect, sample = colnames(counts(dds_filter)))
+df <- melt(df, id.vars = 'sample')
+# stacked bar
+ggplot(data=df, aes(x=sample, y=value, fill=variable)) +
+  geom_bar(stat="identity")+
+  scale_fill_brewer(palette="Paired")+
+  theme_classic(base_size = 25)+
+  xlab("Replicate")+
+  ylab("# Genes")+
+  theme(legend.title = element_blank(),
+        legend.position="top")
+
+# shared among replicates
+x <- list(I1 = rownames(counts(dds_filter)[counts(dds_filter)[,1] > 3,]),
+          I2 = rownames(counts(dds_filter)[counts(dds_filter)[,2] > 3,]),
+          I3 = rownames(counts(dds_filter)[counts(dds_filter)[,3] > 3,]))
+ggvenn(
+  x, 
+  fill_color = c("red", "green", "blue"),
+  stroke_size = 0.5, set_name_size = 7
+  )
+
+library(eulerr)
+fit <- euler(x)
+plot(fit,
+     quantities = TRUE)
+```
+
+## Running DESeq
+
+```{r}
+dds_filter <- DESeq(dds_filter)
+
+# ouptut normalized counts
+write.csv(counts(dds_filter, normalized = TRUE), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/RNA-Seq/Differential\ Expression/DESeq2_normalized_counts_RNA.csv", row.names = TRUE)
+```
+
+Normalized count distribution
+
+```{r}
+# density plot normalized
+plotDensity(log2(counts(dds_filter, normalized = TRUE) + 1),
+            lty=1,
+            col=colors[sampleTable$sampleName],
+            lwd=1,
+            xlab = "log2(Counts + 1)",
+            main = "Normalized Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = colors)
+
+# box plot normalized
+boxplot(log2(counts(dds_filter, normalized = TRUE) + 1),
+        col = colors[sampleTable$sampleName],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Normalized Counts")
+legend("topright",
+       legend=levels(sampleTable$sampleName),
+       lwd=1, col = colors)
+```
+
+## Mean Variance Relationship
+
+Plotting the mean and variance to examine whether the data appears to
+have a non-linear relationship between the variance and mean which would
+support the use of a negative binomial distribution to model read
+counts. This is done by comparing the mean-variance plot to a linear
+line.
+
+```{r}
+## Computing mean and variance
+norm.counts <- counts(dds_filter, normalized=TRUE) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="Mean-variance relationship", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+abline(a=1, b=1, col="red") # a linear line to compare against 
+```
+
+## Estimation of Dispersion
+
+This gives us a feel for what the dispersion parameter is in our model
+and what the effect of dispersion shrinkage is. We see that there are 29
+dispersion shrinkage outliers which will keep their original dispersions
+before shrinkage.
+
+```{r}
+plotDispEsts(dds_filter)
+sum(mcols(dds_filter,use.names=TRUE)[,"dispOutlier"])
+```
+
+## Transform counts to stabilize mean-variance for clustering
+
+Using two transformations in order to stabilize the mean-variance
+relationship in order to minimize the influence of genes with low read
+counts when performing unsupervised analysis.
+
+```{r}
+dds_rlog <- rlog(dds_filter)
+dds_vst <- vst(dds_filter)
+```
+
+Log2 transformed counts just for comparison. We can see that this does
+not stabilize the mean-variance relationship.
+
+```{r}
+dds_log2 <- log2(counts(dds_filter) + 1)
+meanSdPlot(dds_log2)
+```
+
+Compare rlog and vst transformations. We choose to use the VST
+transformation here as the line appear to be more horizontal than the
+rlog fitted line.
+
+```{r}
+# rank plots
+meanSdPlot(assay(dds_rlog))
+meanSdPlot(assay(dds_vst))
+
+## better plot 
+norm.counts <- assay(dds_filter) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="Non-transformed", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+
+## better plot 
+norm.counts <- assay(dds_vst) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="VST transformed", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+
+# ouptut vst counts
+write.csv(assay(dds_vst), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/RNA-Seq/Differential\ Expression/DESeq2_vst_counts_RNA.csv", row.names = TRUE)
+```
+
+## Heatmap of the sample-to-sample distances
+
+```{r}
+sampleDists <- dist(t(assay(dds_vst)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colnames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colors <- magma(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+## Heatmap of highly expressed genes
+
+No need to scale rows here as we are not interested in the differences
+between the replicates of the same condition
+
+-   High = cluster 2
+
+-   Medium = cluster 3
+
+-   Low = cluster 1
+
+```{r}
+# set up matrix
+dds_vst.mat <- as.matrix(assay(dds_vst))
+
+# divide into 3 clusters 
+clust <- kmeans(dds_vst.mat, 3)
+
+# re-order
+split <- factor(paste0("Cluster\n", clust$cluster), levels=c("Cluster\n3","Cluster\n2","Cluster\n1"))
+
+HM <- Heatmap(dds_vst.mat, 
+        name = "Variance-stabilized counts", 
+        row_names_gp = gpar(fontsize = 7), 
+        split = split,
+        cluster_row_slices = FALSE,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = FALSE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(30, "mm"),
+        heatmap_legend_param = list(direction = "horizontal"))
+draw(HM, heatmap_legend_side = "bottom")
+```
+
+## Genomic Features
+
+Create GRanges object using significant genes
+
+```{r}
+library(GenomicFeatures)
+library(GenomicRanges)
+
+chrominfo <- read.table("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/GCF_000006565.2_TGA4_genomic.chrom_info.txt", header = TRUE)
+tga4 <- makeTxDbFromGFF("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/GCF_000006565.2_TGA4_genomic.gff", format = "gff", organism = "Toxoplasma", taxonomyId = 1208370, dbxrefTag = "locus_tag", chrominfo = chrominfo)
+tga4_map <- read.table("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/ID-description_mapping.txt", sep = "\t")
+
+# get genomic ranges
+exoRanges <- exonsBy(tga4, "gene") %>% 
+    range() %>% 
+    unlist()
+sigRegions <- exoRanges[na.omit(match(rownames(dds_vst), names(exoRanges)))]
+sigRegions
+
+# add meta data
+mcols(sigRegions)$mean <- rowMeans(assay(dds_vst)[match(names(sigRegions), rownames(dds_vst)), ])
+mcols(sigRegions)$description <- tga4_map[match(names(sigRegions), tga4_map$V1), ]$V2
+sigRegions
+```
+
+Plot genes over chromosomes
+
+```{r}
+library(ggbio)
+library(readxl)
+chrs <- c("NC_031467.1",	"NC_031468.1",	"NC_031469.1",	"NC_031470.1",	"NC_031471.1",	"NC_031472.1",	"NC_031473.1",	"NC_031474.1",	"NC_031475.1",	"NC_031476.1",	"NC_031477.1",	"NC_031478.1",	"NC_031479.1",	"NC_031480.1",	"NC_001799.1")
+map <- read_excel("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/NCBI_chromosome_mapping.xlsx")
+dds.granges.plot <- sigRegions
+dds.granges.plot <- keepSeqlevels(dds.granges.plot, pruning.mode = "tidy", chrs)
+seqlevels(dds.granges.plot)<- map$`Molecule name`[-15] # leave out unmappedContig
+
+# only show top 10 labels
+dds.granges.plot <- dds.granges.plot[order(dds.granges.plot$mean, decreasing = TRUE),]
+labels <- dds.granges.plot$description
+dds.granges.plot$description <- ""
+dds.granges.plot$description[1:10] <- labels[1:10]
+
+plotGrandLinear(dds.granges.plot, aes(y = mean), color = c("red", "blue"), ylab = "Mean VST Expression", spaceline = TRUE, xlim = c(0, 70000000)) +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        text = element_text(size = 15, family = "Arial")) +
+  geom_text_repel(aes(label = dds.granges.plot$description), color = "black", max.overlaps = Inf, size = 5)
+  
+
+autoplot(dds.granges.plot, layout="karyogram", aes(fill = mean)) +
+  scale_color_gradient(low="blue", high="red") +
+  scale_fill_gradient(low="blue", high="red")
+```
+
+## Correlation between replicates
+
+```{r}
+res <- cor(dds_vst.mat)
+
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+
+chart.Correlation(dds_vst.mat, histogram=TRUE, pch=19)
+```
+
+# Gene Set Enrichment
+
+Setting up
+
+```{r}
+high <- names(clust$cluster[clust$cluster == 1])
+medium <- names(clust$cluster[clust$cluster == 2])
+low <- names(clust$cluster[clust$cluster == 3])
+
+## build GO database
+# read GO annotation file
+GAF <- readGAF(filename="/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/ToxoDB-53_TgondiiME49_GO.gaf")
+# extract relevant info.
+# unfortunately could not find accessor functions for all required
+# info, thus sometimes had to utilize object slots directly (with @)
+mapping.index <-  GAF@itemName2ItemIndex
+ID.annotations <- itemAnnotations(GAF)
+
+GO.sets <- GAF@sets
+GO.annotation <- setAnnotations(GAF)
+
+
+# create a 2-column data frame with GOID and ID index
+# after little further processing, this will be used as input for clusterProfiler
+GO.df <- data.frame("GOID" = rep(names(GO.sets), sapply(GO.sets, length)),
+        "ID.index" = unlist(GO.sets),  row.names = NULL)
+
+
+# do some processing for objects GO.annotation and GO.df
+# in both remove category 'all',
+# and to GO.df also add column with Uniprot ids
+
+# GO.annotation
+GO.annotation <- GO.annotation[GO.annotation[,"term"] != "all", ]
+GO.annotation[,"GOID"] <- rownames(GO.annotation)
+
+# GO.df
+GO.df <- GO.df[GO.df[,"GOID"] != "all", ]
+GO.df[,"GeneID"] <- names(mapping.index [GO.df[,"ID.index"] ])
+```
+
+## Over enrichment
+
+```{r}
+ego_high <- enricher(
+    gene=high,
+    pAdjustMethod = "BH",
+    universe=rownames(dds_vst.mat),
+    minGSSize = 10,
+    maxGSSize = 500,
+    TERM2GENE = GO.df[ ,c("GOID","GeneID")],
+    TERM2NAME = GO.annotation[ ,c("GOID", "term")]
+)
+dotplot(ego_high, showCategory=20)
+emapplot(pairwise_termsim(ego_high))
+
+ego_medium <- enricher(
+    gene=medium,
+    pAdjustMethod = "BH",
+    universe=rownames(dds_vst.mat),
+    minGSSize = 10,
+    maxGSSize = 500,
+    TERM2GENE = GO.df[ ,c("GOID","GeneID")],
+    TERM2NAME = GO.annotation[ ,c("GOID", "term")]
+)
+dotplot(ego_medium, showCategory=20)
+emapplot(pairwise_termsim(ego_medium))
+
+ego_low <- enricher(
+    gene=low,
+    pAdjustMethod = "BH",
+    universe=rownames(dds_vst.mat),
+    minGSSize = 10,
+    maxGSSize = 500,
+    TERM2GENE = GO.df[ ,c("GOID","GeneID")],
+    TERM2NAME = GO.annotation[ ,c("GOID", "term")]
+)
+dotplot(ego_low, showCategory=20)
+emapplot(pairwise_termsim(ego_low))
+```
+
+Compare clusters
+
+```{r}
+cluster.list <- list(High = high, Medium = medium, Low = low)
+
+ck <- compareCluster(geneCluster = cluster.list, fun = "enricher", TERM2GENE = GO.df[ ,c("GOID","GeneID")],TERM2NAME = GO.annotation[ ,c("GOID", "term")])
+
+dotplot(ck, showCategory=10, title = "Gene Ontology", label_format = function(x) stringr::str_wrap(x, width=40)) + 
+  scale_color_viridis(option = "viridis", direction = 1)
+
+emapplot(pairwise_termsim(ck), pie="count")
+
+write.csv(ck@compareClusterResult, "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/RNA-Seq/Infected_Enrich_GO.csv")
+```

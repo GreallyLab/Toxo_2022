@@ -1,0 +1,79 @@
+---
+title: "Toxoplasma motif enrichment"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+
+## Loading libraries
+```{r}
+library(MotifDb)
+library(JASPAR2020)
+library(TFBSTools)
+library(motifmatchr)
+library(readxl)
+library(dplyr)
+library(SummarizedExperiment)
+library(universalmotif)
+library(ggseqlogo)
+library(ggplot2)
+```
+
+Forge BSgenome
+- following: https://www.bioconductor.org/packages/devel/bioc/vignettes/BSgenome/inst/doc/BSgenomeForge.pdf
+```{r}
+library(Biostrings)
+library(BSgenome)
+library(BSgenome.Tgondii.NCBI.TGA4)
+```
+
+## Setting up
+- Getting 100bp seqs within each peak
+```{r}
+# retrieve peaks 
+cnts <- readRDS("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Quantification/Infected_optimal_peaks.counts.rds")
+
+# filter out non-main chromsomes
+cnts.filtered <- cnts[seqnames(cnts) %in% names(BSgenome.Tgondii.NCBI.TGA4@single_sequences)]
+# filter out apicoplast
+cnts.filtered <- cnts.filtered[!seqnames(cnts.filtered) %in% "NC_001799.1"]
+peakRanges <- cnts.filtered@rowRanges
+peakRangesCentered <- resize(peakRanges, fix = "center", width = 100)
+peakSeqs <- getSeq(BSgenome.Tgondii.NCBI.TGA4, peakRangesCentered)
+names(peakSeqs) <- as.character(peakRangesCentered)
+peakSeqs
+```
+
+# De novo motif discovery
+- Use all peaks
+- Meme-ChIP: http://meme-suite.org/tools/meme-chip
+```{r}
+writeXStringSet(peakSeqs, file = "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Motif\ Enrichment/Infected_optimal_peaks_apicoplast-removed.seq.fa")
+```
+
+Read in Upregions results, convert, and output seq logo
+```{r}
+memeMotifs <- read_meme("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Motif\ Enrichment/meme_apicoplast_removed/combined.meme",
+                        readsites = TRUE,
+                        readsites.meta = TRUE)
+memeMotifs
+
+memeMotifsTFBStools <- convert_motifs(memeMotifs, "TFBSTools-PFMatrix")
+Matrix(memeMotifsTFBStools[[1]])
+
+# get pfm
+myMatrixList <- lapply(memeMotifsTFBStools, Matrix)
+# convert to ppm
+ppmList <- lapply(myMatrixList, function(x) x/colSums(x))
+
+lapply(ppmList, function(x) print(ggseqlogo(x) + ggtitle(names(x))))
+```

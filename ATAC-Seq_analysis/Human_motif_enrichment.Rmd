@@ -1,0 +1,279 @@
+---
+title: "Motif enrichment analysis of toxoplasma infection in human"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+# Loading libraries
+
+```{r}
+library(MotifDb)
+library(JASPAR2020)
+library(TFBSTools)
+library(motifmatchr)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(chromVAR)
+library(ComplexHeatmap)
+library(viridis)
+library(seqLogo)
+library(ggseqlogo)
+library(ggplot2)
+library(ggvenn)
+library(clusterProfiler)
+library(EnhancedVolcano)
+```
+
+## Loading ATAC-Seq quantification
+
+-   Excluding I1 replicate as this was previously deemed an outlier
+
+```{r}
+peakRanges <- readRDS("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Quantification/Non-redundent_narrowPeak_optimal.rds")
+peakRanges <- peakRanges[,-c(1)] # remove I1
+
+# get sequences from peaks
+peakRanges.filter <- peakRanges[seqnames(peakRanges) %in% names(BSgenome.Hsapiens.UCSC.hg38@single_sequences)]
+peakRanges.filter.range <- peakRanges.filter@rowRanges
+peakRangesCentered <- resize(peakRanges.filter.range, fix = "center", width = 100)
+names(peakRangesCentered) <- seqnames(peakRangesCentered)
+peakSeqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, peakRangesCentered)
+names(peakSeqs) <- as.character(peakRangesCentered)
+peakSeqs
+```
+
+# Motif de novo enrichment
+
+-   Use top 1000 deferentially accessible peaks from DESeq2
+
+-   Using Meme-ChIP: <http://meme-suite.org/tools/meme-chip>
+
+```{r}
+# setting up
+myRes <- read.csv("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Differential\ Accessibility/Uninfected_Infected_DESeq2.csv", header= TRUE, row.names = 1)
+myRes <- makeGRangesFromDataFrame(myRes, keep.extra.columns=TRUE)
+myRes <- myRes[order(myRes$padj), ]
+upRegions <- myRes[myRes$log2FoldChange > 0,][1:1000]
+downRegions <- myRes[myRes$log2FoldChange < 0, ][1:1000]
+
+# remove peaks on scaffolds
+main.chroms <- standardChromosomes(BSgenome.Hsapiens.UCSC.hg38)
+
+keep.peaks <- as.logical(seqnames(granges(upRegions)) %in% main.chroms)
+upRegions <- upRegions[keep.peaks, ]
+
+keep.peaks <- as.logical(seqnames(granges(downRegions)) %in% main.chroms)
+downRegions <- downRegions[keep.peaks, ]
+
+# resize peaks 
+upRegions <- resize(upRegions, fix = "center", width = 100)
+downRegions <- resize(downRegions, fix = "center", width = 100)
+
+# export fasta to be used by meme-ChIP
+upStrings <- getSeq(BSgenome.Hsapiens.UCSC.hg38, upRegions)
+names(upStrings) <- as.character(upRegions)
+writeXStringSet(upStrings, file = "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Motif\ Enrichment/All_peaks/upRegions.top1000.fa")
+
+downStrings <- getSeq(BSgenome.Hsapiens.UCSC.hg38, downRegions)
+names(downStrings) <- as.character(downRegions)
+writeXStringSet(downStrings, file = "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Motif\ Enrichment/All_peaks/downRegions.top1000.fa")
+```
+
+# Motif a priori enrichment
+
+Retrieve the vertebrate, JASPAR CORE motifs, latest versions
+
+```{r}
+opts <- list()
+opts[["tax_group"]] <- "vertebrates"
+opts[["collection"]] <- "CORE"
+opts[["all_versions"]] <- FALSE
+motifsToScan <- getMatrixSet(JASPAR2020, opts)
+```
+
+Map motifs to peaks
+
+```{r}
+# get RangedSummarizedExperiment
+cnts.motifs <- subsetByOverlaps(peakRanges, upRegions) 
+
+# remove peaks on scaffolds
+main.chroms <- standardChromosomes(BSgenome.Hsapiens.UCSC.hg38)
+keep.peaks <- as.logical(seqnames(granges(cnts.motifs)) %in% main.chroms)
+cnts.motifs <- cnts.motifs[keep.peaks, ]
+
+# correct GC bias 
+cnts.motifs <- addGCBias(cnts.motifs, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+# map motifs to peaks 
+motif_ix <- matchMotifs(motifsToScan, cnts.motifs, genome = BSgenome.Hsapiens.UCSC.hg38)
+```
+
+Compute deviations and variability
+
+-   Deviation: how accessible a set of peaks is relative to the
+    expectation based on equal chromatin accessibility profiles across
+    cells/samples, normalized by a set of background peak sets matched
+    for GC and average accessability.
+
+-   Variability: standard deviation of z scores across all samples
+
+```{r}
+# deviations
+deviations <- computeDeviations(object = cnts.motifs, annotations = motif_ix)
+devZscores <- deviationScores(deviations)
+devZscores[1:10,]
+
+# variability 
+variability_Known <- computeVariability(deviations)
+variability_Known <- variability_Known[order(variability_Known$p_value), ]
+variability_Known[1:10, ]
+
+# output merged variability and deviance 
+devOut <- merge(variability_Known, devZscores, by = 0)
+devOut <- devOut[order(devOut$p_value_adj),]
+
+# summary of sig up and down peaks
+sig <- devOut[devOut$p_value_adj < 0.05,]
+avg <- data.frame(Uninfected = rowMeans(sig[,c("U1", "U2", "U3")]), 
+                  Infected = rowMeans(sig[,c("I2", "I3")]))
+up <- sum(avg$Uninfected < avg$Infected)
+up
+down <- sum(avg$Uninfected > avg$Infected)
+down
+
+write.csv(devOut, "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Motif\ Enrichment/All_peaks/Uninfected_Infected_ChromVar.csv", row.names = FALSE)
+
+plotVariability(variability_Known, n = 10, use_plotly = FALSE) 
+```
+
+Visualize top variable motifs
+
+```{r}
+# get top
+topMotif <- getMatrixByID(JASPAR2020, rownames(variability_Known)[1])
+# get pfm
+myMatrix <- Matrix(topMotif)
+# convert to ppm
+ppm <- myMatrix/colSums(myMatrix)
+seqLogo::seqLogo(ppm, ic.scale = FALSE)
+seqLogo::seqLogo(ppm)
+
+# get top 20 
+opts <- list()
+opts[["ID"]] <- rownames(variability_Known)[1:20]
+motifList <- getMatrixSet(JASPAR2020, opts)
+names(motifList) <- variability_Known[1:20,]$name
+# get pfm
+myMatrixList <- Matrix(motifList)
+# convert to ppm
+ppmList <- lapply(myMatrixList, function(x) x/colSums(x))
+# output
+pdf(file = "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Motif\ Enrichment/All_peaks/Uninfected_Infected_ChromVar_Motifs.pdf",
+width = 7,
+height = 3) 
+lapply(ppmList, function(x) print(ggseqlogo(x) + ggtitle(names(x))))
+dev.off()
+```
+
+Heatmap
+
+```{r}
+topVariable <- devOut[devOut$p_value_adj < 0.05,]
+
+devOut[devOut$name == "RREB1",]
+
+topVariable <- devOut[1:150,]
+
+plot(seq(1:150), devOut$variability[1:150])
+
+# set up matrix
+topVariablePlot <- as.matrix(topVariable[,c("U1", "U2", "U3", "I2", "I3")])
+rownames(topVariablePlot) <- topVariable$name
+
+colors <- viridis(5)[c(1,5)]
+col <- list(Condition = c(
+            "Infected" = colors[2],
+            "Uninfected" = colors[1]))
+ha <- HeatmapAnnotation(Condition = factor(c(rep("Uninfected", 3), rep("Infected", 2)), levels = c("Uninfected", "Infected")), col = col)
+
+Heatmap(topVariablePlot, 
+        name = "Z-score", 
+        row_names_gp = gpar(fontsize = 7),
+        top_annotation = ha,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = TRUE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(20, "mm"))
+
+
+topVariable <- cbind(topVariable, 
+                data.frame(Uninfected = rowMeans(topVariable[,c("U1", "U2", "U3")]), 
+                        Infected = rowMeans(topVariable[,c("I2", "I3")])))
+topVariableUp <- topVariable[topVariable$Infected > topVariable$Uninfected,]
+topVariableDown <- topVariable[topVariable$Infected < topVariable$Uninfected,]
+top20 <- rbind(topVariableUp[1:20,], topVariableDown[1:20,])
+  
+# set up matrix
+topVariablePlot <- as.matrix(top20[,c("U1", "U2", "U3", "I2", "I3")])
+rownames(topVariablePlot) <- top20$name
+
+
+Heatmap(topVariablePlot, 
+        name = "Z-score", #title of legend
+        row_names_gp = gpar(fontsize = 7), # Text size for row names
+        top_annotation = ha,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = TRUE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(20, "mm"))
+```
+
+## Highlight heatmap with shared motifs between de novo and apriori
+
+```{r}
+myRows <- c("RELA",	"REL",	"MAF::NFE2",	"JDP2",
+            "KLF16", "KLF5", "SP1", "SP3", "NFKB1", "NFKB2", "Klf1", "TEAD3", "TEAD1", "SP4", "FOS::JUN(var.2)")
+
+myRows <- c("RELA",	"REL",	"MAF::NFE2",	"JDP2",
+            "KLF16", "KLF5", "SP1", "SP3", "NFKB1", "NFKB2", "Klf1", "TEAD3", "TEAD1", "SP4", "FOS::JUN(var.2)",  "RREB1")
+
+# Set stylings for row names and make our selected rows unique
+row_idx <- which(rownames(topVariablePlot) %in% myRows)
+fontsizes <- rep(8, nrow(topVariablePlot))
+fontsizes[row_idx] <- 10
+fontcolors <- rep('black', nrow(topVariablePlot))
+fontcolors[row_idx] <- 'red'
+fontfaces <- rep('plain',nrow(topVariablePlot))
+fontfaces[row_idx] <- 'bold'
+
+# Create text annotation object for displaying row names
+rowAnno <- rowAnnotation(rows = anno_text(rownames(topVariablePlot), gp = gpar(fontsize = fontsizes, fontface = fontfaces, col = fontcolors)))
+
+Heatmap(topVariablePlot, 
+        right_annotation = rowAnno,
+        name = "Z-score", #title of legend
+        row_names_gp = gpar(fontsize = 7), # Text size for row names
+        top_annotation = ha,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = FALSE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(20, "mm"))
+```

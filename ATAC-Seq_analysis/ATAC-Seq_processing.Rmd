@@ -1,0 +1,694 @@
+---
+title: "Processing of toxoplasma infection ATAC-Seq data"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+# Raw read quality control
+
+Initial raw read assessment
+
+-   Illumina universal adapters detected in all samples towards end of
+    reads
+
+```{bash, eval = FALSE}
+module load FastQC/0.11.4/java.1.8.0_20
+module load python/3.7.3/gcc.4.4.7
+
+fastqc -t 4 -o FastQC \
+U3_2.fq.gz \
+U2_2.fq.gz \
+U3_1.fq.gz \
+U2_1.fq.gz \
+U1_2.fq.gz \
+U1_1.fq.gz \
+I3_2.fq.gz \
+I3_1.fq.gz \
+I2_2.fq.gz \
+I2_1.fq.gz \
+I1_2.fq.gz \
+I1_1.fq.gz
+
+multiqc . -o multiqc
+```
+
+## Trimming Reads
+
+Read trimming and re-assessment
+
+-   Adapters no longer detected and mean Phred score improved
+
+```{bash, eval = FALSE}
+module load trim_galore/0.6.5 
+module load cutadapt/2.5/python.3.7.3
+module load python/3.7.3/gcc.4.4.7
+
+for i in *.fq
+do
+SampleName=`basename ${i/_1_val_1.fq.gz/}`
+echo $SampleName
+
+trim_galore --nextera --paired --fastqc -o Trimmed -j 4 \
+${SampleName}_1_val_1.fq.gz ${SampleName}_2_val_2.fq.gz
+
+done
+
+multiqc . -o multiqc
+```
+
+# Alignment
+
+Downloading genomes and annotations
+
+-   GRCh38:
+    [\<https://www.ncbi.nlm.nih.gov/assembly/GCF_000001405.26/>](https://www.ncbi.nlm.nih.gov/assembly/GCF_000001405.26/){.uri}
+
+-   GRCh38 decoy:
+    [\<https://www.ncbi.nlm.nih.gov/assembly/GCA_000786075.2/>](https://www.ncbi.nlm.nih.gov/assembly/GCA_000786075.2/){.uri}
+
+-   Toxoplasma ME49 (TGA4):
+    [\<https://www.ncbi.nlm.nih.gov/assembly/GCF_000006565.2/>](https://www.ncbi.nlm.nih.gov/assembly/GCF_000006565.2/){.uri}
+
+Combining human, human decoy, and toxoplasma genomes
+
+```{bash, eval = FALSE}
+cat GCA_000001405.15_GRCh38_full_analysis_set.fna \
+GCA_000786075.2_hs38d1_genomic.fna \
+GCF_000006565.2_TGA4_genomic.fna \
+> GCA_000001405.15_GRCh38_full_analysis_set-GCA_000786075.2_hs38d1_genomic-GCF_000006565.2_TGA4_genomic.fna
+```
+
+Creating index using combined genomes
+
+```{bash, eval = FALSE}
+module load bwa/0.7.17/gcc.7.1.0
+
+bwa index -p bwa -a bwtsw /gs/gsfs0/users/greally-lab/Toxo_reanalysis/Ronnie/Genomes/GCA_000001405.15_GRCh38_full_analysis_set-GCA_000786075.2_hs38d1_genomic-GCF_000006565.2_TGA4_genomic.fna
+```
+
+Alignment with sorting, indexing and stats
+
+```{bash, eval = FALSE}
+module load bwa/0.7.17/gcc.7.1.0
+module load samtools/1.9/gcc.7.1.0
+
+for f1 in /gs/gsfs0/users/greally-lab/Toxo_reanalysis/Ronnie/ATAC-Seq/FASTQ/Trimmed/*1_val_1.fq.gz
+do
+SampleName=`basename ${f1/_1_val_1.fq.gz/}`
+echo $SampleName
+
+bwa mem -t 4 -M \
+/gs/gsfs0/users/greally-lab/indexes/Toxo_Human/GRCh38+hs38d1+TGA4/bwa/bwa \
+/gs/gsfs0/users/greally-lab/Toxo_reanalysis/Ronnie/ATAC-Seq/FASTQ/Trimmed/${SampleName}_1_val_1.fq.gz /gs/gsfs0/users/greally-lab/Toxo_reanalysis/Ronnie/ATAC-Seq/FASTQ/Trimmed/${SampleName}_2_val_2.fq.gz \
+| samtools view -@ 4 -Shu \
+| samtools sort - -O bam -@ 4 -o ${SampleName}.sorted.bam
+
+## index
+samtools index -@ 4 ${SampleName}.sorted.bam
+
+## stats
+samtools flagstat -@ 4 ${SampleName}.sorted.bam > ${SampleName}.sorted.stat
+
+done
+```
+
+### Alignment filtering
+
+Remove mitochondrial reads
+
+```{bash, eval = FALSE}
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.sorted.bam
+do echo $i
+
+## extracting mitochondrial reads 
+samtools view -@ 4 -hbS $i 'chrM' > $(basename -- $i).chrM.bam
+
+## stats mitochondrial reads
+samtools flagstat -@ 4 $(basename -- $i).chrM.bam > $(basename -- $i).chrM.stat
+
+## remove mitochondrial reads and sort
+samtools view -@ 4 -h $i | grep -v chrM | samtools sort - -@ 4 -O bam -o $(basename -- $i).sorted.rmchrM.bam
+
+## index filtered reads
+samtools index -@ 4 $(basename -- $i).sorted.rmchrM.bam
+
+## stats filteres reads
+samtools flagstat -@ 4 $(basename -- $i).sorted.rmchrM.bam > $(basename -- $i).sorted.rmchrM.stat
+
+done
+```
+
+Remove PCR optical duplicates
+
+```{bash, eval = FALSE}
+module load picard-tools/1.92/java.1.8.0_20
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.rmchrM.bam
+do echo $i
+
+## mark duplicates 
+java -jar $(which MarkDuplicates.jar) \
+I=$i \
+O=$(basename -- $i).dupsMarked.bam \
+M=$(basename -- $i).marked_dup_metrics.txt \
+REMOVE_DUPLICATES=false
+
+## remove duplicates and sort
+samtools view -@ 4 -bS -F 1024 $(basename -- $i).dupsMarked.bam | samtools sort - -O BAM -@ 4 -o $(basename -- $i).sorted.rmDups.bam
+
+## index
+samtools index -@ 4 $(basename -- $i).sorted.rmDups.bam
+
+## stats
+samtools flagstat -@ 4 $(basename -- $i).sorted.rmDups.bam > $(basename -- $i).sorted.rmDups.stat
+
+done
+```
+
+Quality filter
+
+-   Filter bwa mem MAPQ \< 20, not paired, not properly paired,
+    unmapped, not primary alignment, fails platform/vendor checks, or is
+    PCR or optical duplicate
+
+```{bash, eval = FALSE}
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.rmDups.bam 
+do echo $i
+
+samtools view -@ 4 -hb -q 20 -F 1804 $i | samtools sort - -@ 4 -O bam -o $(basename -- $i).filtered.bam
+
+## index
+samtools index -@ 4 $(basename -- $i).filtered.bam
+
+## stats
+samtools flagstat -@ 4 $(basename -- $i).filtered.bam > $(basename -- $i).filtered.stat
+
+done
+```
+
+Shift reads
+
+```{bash, eval = FALSE}
+module load deeptools/3.1.0/python.2.7.8
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.filtered.bam
+do echo $i
+
+alignmentSieve --numberOfProcessors 8 --ATACshift --bam $i -o $(basename -- $i).shift.bam
+
+## sort by name
+samtools sort -@ 8 -n -O BAM -o $(basename -- $i).sorted.shift.bam $(basename -- $i).shift.bam
+
+## index
+samtools index -@ 8 $(basename -- $i).sorted.shift.bam
+
+## stats
+samtools flagstat -@ 8 $(basename -- $i).sorted.shift.bam > $(basename -- $i).sorted.shift.stat
+
+done
+```
+
+Split reads into human and toxoplasma
+
+```{bash, eval = FALSE}
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.shift.bam
+do echo $i
+
+## extract toxo reads
+samtools view -@ 4 -h $i | grep -f GCF_000006565.2_TGA4_genomic_chromosomes.txt | samtools sort - -n -@ 4 -O bam -o $(basename -- $i).toxo.bam
+
+## index reads
+samtools index -@ 4 $(basename -- $i).toxo.bam
+
+## alignment stats
+samtools flagstat -@ 4 $(basename -- $i).toxo.bam > $(basename -- $i).toxo.stat
+
+## filter out toxo reads
+samtools view -@ 4 -h $i | grep -v -f GCA_013099955.1_tgrh88_genomic_chromosomes.txt | samtools sort - -n -@ 4 -O bam -o $(basename -- $i).human.bam
+
+## index reads
+samtools index -@ 4 $(basename -- $i).human.bam
+
+## stats reads
+samtools flagstat -@ 4 $(basename -- $i).human.bam > $(basename -- $i).human.stat
+
+done
+```
+
+Sub-sample human reads in uninfected group as the infected group only
+has 32.64% as many reads on average. This is because in infected group,
+large proportion of reads are used by Toxoplasma
+
+```{bash, eval = FALSE}
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.human.bam
+do echo $i
+
+samtools view -@ 4 -s 0.6736 -hb $i | samtools sort - -@ 4 -O bam -o $(basename -- $i).subsample.bam
+
+## index reads
+samtools index -@ 4 $(basename -- $i).subsample.bam
+
+## stats reads
+samtools flagstat -@ 4 $(basename -- $i).subsample.bam > $(basename -- $i).subsample.stat
+
+done
+```
+
+# ATAC-Seq Quality Control
+
+Human
+
+-   Shown is an example for one sample
+
+```{r, eval = FALSE}
+# libraries
+library(ATACseqQC)
+library(ChIPpeakAnno)
+library(MotifDb)
+library(GenomicAlignments)
+library(Rsamtools)
+library(motifStack)
+
+# annotation
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(phastCons100way.UCSC.hg38)
+
+# bam files
+bamfile <- "I1.bam.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.human.bam"
+bamfile.label <- "I1"
+
+# general stats
+bamQC(bamfile)
+
+# fragment size distribution
+fragSizeDist(bamfile, bamfile.label)
+
+# shift reads
+possibleTag <- list("integer"=c("AM", "AS", "CM", "CP", "FI", "H0", "H1", "H2", 
+                                "HI", "IH", "MQ", "NH", "NM", "OP", "PQ", "SM",
+                                "TC", "UQ"), 
+                 "character"=c("BC", "BQ", "BZ", "CB", "CC", "CO", "CQ", "CR",
+                               "CS", "CT", "CY", "E2", "FS", "LB", "MC", "MD",
+                               "MI", "OA", "OC", "OQ", "OX", "PG", "PT", "PU",
+                               "Q2", "QT", "QX", "R2", "RG", "RX", "SA", "TS",
+                               "U2"))
+bamTop100 <- scanBam(BamFile(bamfile, yieldSize = 100),
+                     param = ScanBamParam(tag=unlist(possibleTag)))[[1]]$tag
+tags <- names(bamTop100)[lengths(bamTop100)>0]
+outPath <- paste(bamfile.label, "_split.shift", sep = "")
+dir.create(outPath)
+seqinformation <- seqinfo(TxDb.Hsapiens.UCSC.hg38.knownGene)
+which <- as(seqinformation, "GRanges")
+bam <- readBamFile(bamfile, tag=tags, which=which, asMates=TRUE, bigFile=TRUE)
+shiftedBamfile <- file.path(outPath, "shifted.bam")
+bam.shift <- shiftGAlignmentsList(bam, outbam=shiftedBamfile)
+
+# Promoter/Transcript body (PT) score
+txs <- transcripts(TxDb.Hsapiens.UCSC.hg38.knownGene)
+pt <- PTscore(bam.shift, txs)
+plot(pt$log2meanCoverage, pt$PT_score, 
+     xlab="log2 mean coverage",
+     ylab="Promoter vs Transcript")
+abline(h=0, col="blue", lty=2)
+mean(pt$PT_score)
+
+# Nucleosome Free Regions (NFR) score
+nfr <- NFRscore(bam.shift, txs)
+plot(nfr$log2meanCoverage, nfr$NFR_score, 
+     xlab="log2 mean coverage",
+     ylab="Nucleosome Free Regions score",
+     main="NFRscore for 200bp flanking TSSs",
+     xlim=c(-10, 0), ylim=c(-5, 5))
+mean(nfr$NFR_score)
+
+# Transcription Start Site (TSS) Enrichment Score
+tsse <- (TSSEscore(bam.shift, txs))
+plot(100*(-9:10-.5), tsse$values, type="b", 
+     xlab="distance to TSS",
+     ylab="aggregate TSS score")
+
+# split reads
+genome <- Hsapiens
+objs <- splitGAlignmentsByCut(bam.shift, txs=txs, genome=genome, outPath = outPath, conservation=phastCons100way.UCSC.hg38)
+bamfiles <- file.path(outPath,
+                     c("NucleosomeFree.bam",
+                     "mononucleosome.bam",
+                     "dinucleosome.bam",
+                     "trinucleosome.bam"))
+
+# Cumulative percentage of tag allocation in nucleosome-free 
+cumulativePercentage(bamfiles[1:2], as(seqinformation["chr1"], "GRanges"))
+
+# Heatmap and coverage curve for nucleosome positions
+TSS <- promoters(txs, upstream=0, downstream=1)
+TSS <- unique(TSS)
+## estimate the library size for normalization
+librarySize <- estLibSize(bamfiles)
+## calculate the signals around TSSs.
+NTILE <- 101
+dws <- ups <- 1010
+sigs <- enrichedFragments(gal=objs[c("NucleosomeFree", 
+                                     "mononucleosome",
+                                     "dinucleosome",
+                                     "trinucleosome")], 
+                          TSS=TSS,
+                          librarySize=librarySize,
+                          seqlev=seqlev,
+                          TSS.filter=0.5,
+                          n.tile = NTILE,
+                          upstream = ups,
+                          downstream = dws)
+## log2 transformed signals
+sigs.log2 <- lapply(sigs, function(.ele) log2(.ele+1))
+## plot heatmap
+featureAlignedHeatmap(sigs.log2, reCenterPeaks(TSS, width=ups+dws),
+                      zeroAt=.5, n.tile=NTILE)
+## get signals normalized for nucleosome-free and nucleosome-bound regions.
+out <- featureAlignedDistribution(sigs, 
+                                  reCenterPeaks(TSS, width=ups+dws),
+                                  zeroAt=.5, n.tile=NTILE, type="l", 
+                                  ylab="Averaged coverage")
+## rescale the nucleosome-free and nucleosome signals to 0~1
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+out <- apply(out, 2, range01)
+matplot(out, type="l", xaxt="n", 
+        xlab="Position (bp)", 
+        ylab="Fraction of signal")
+axis(1, at=seq(0, 100, by=10)+1, 
+     labels=c("-1K", seq(-800, 800, by=200), "1K"), las=2)
+abline(v=seq(0, 100, by=10)+1, lty=2, col="gray")
+
+# plot CTCF footprint
+CTCF <- query(MotifDb, c("CTCF"))
+CTCF <- as.list(CTCF)
+sigs <- factorFootprints(shiftedBamfile, pfm=CTCF[[1]], 
+                         genome=genome,
+                         min.score="90%", seqlev=seqlev,
+                         upstream=100, downstream=100,
+                         newpage = FALSE)
+```
+
+Toxoplasma
+
+-   Shown is an example for one sample
+
+```{r, eval = FALSE}
+# libraries
+library(ATACseqQC)
+library(ChIPpeakAnno)
+library(MotifDb)
+library(GenomicAlignments)
+library(GenomicFeatures)
+library(Rsamtools)
+library(motifStack)
+
+# create annotation
+chrominfo <- read.table("GCF_000006565.2_TGA4_genomic.chrom_info.txt", header = TRUE)
+tga4 <- makeTxDbFromGFF("ME49/GCF_000006565.2_TGA4_genomic.gff", format = "gff", organism = "Toxoplasma", taxonomyId = 1208370, dbxrefTag = "locus_tag", chrominfo = chrominfo)
+txs <- transcripts(tga4)
+
+# bam files
+bamfile <- "I1.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.toxo.bam"
+bamfile.label <- "I1"
+
+# general stats
+bamQC(bamfile)
+
+# fragment size distribution
+fragSizeDist(bamfile, bamfile.label)
+
+# shift reads
+bamfile.bam <- BamFile(bamfile, asMates=TRUE)
+bam <- readGAlignmentsList(bamfile.bam, param=ScanBamParam(what = c("qname", "flag", "mapq", "isize", "seq", "qual", "mrnm")))
+outPath <- "splitBam"
+dir.create(outPath)
+shiftedBamfile <- file.path(outPath, "shifted.bam")
+bam.shift <- shiftGAlignmentsList(bam, outbam=shiftedBamfile)
+
+# Promoter/Transcript body (PT) score
+txs <- transcripts(TxDb.Hsapiens.UCSC.hg38.knownGene)
+pt <- PTscore(bam.shift, txs)
+plot(pt$log2meanCoverage, pt$PT_score, 
+     xlab="log2 mean coverage",
+     ylab="Promoter vs Transcript")
+abline(h=0, col="blue", lty=2)
+mean(pt$PT_score)
+
+# Nucleosome Free Regions (NFR) score
+nfr <- NFRscore(bam.shift, txs)
+plot(nfr$log2meanCoverage, nfr$NFR_score, 
+     xlab="log2 mean coverage",
+     ylab="Nucleosome Free Regions score",
+     main="NFRscore for 200bp flanking TSSs",
+     xlim=c(-10, 0), ylim=c(-5, 5))
+mean(nfr$NFR_score)
+
+# Transcription Start Site (TSS) Enrichment Score
+tsse <- (TSSEscore(bam.shift, txs))
+plot(100*(-9:10-.5), tsse$values, type="b", 
+     xlab="distance to TSS",
+     ylab="aggregate TSS score")
+
+# split reads
+objs <- splitGAlignmentsByCut(bam.shift, txs=txs, outPath = outPath)
+bamfiles <- file.path(outPath,
+                     c("NucleosomeFree.bam",
+                     "mononucleosome.bam",
+                     "dinucleosome.bam",
+                     "trinucleosome.bam"))
+
+# Heatmap and coverage curve for nucleosome positions
+TSS <- promoters(txs, upstream=0, downstream=1)
+TSS <- unique(TSS)
+## estimate the library size for normalization
+librarySize <- estLibSize(bamfiles)
+## calculate the signals around TSSs.
+seqlev <- "NC_031478.1"
+NTILE <- 101
+dws <- ups <- 1010
+sigs <- enrichedFragments(gal=objs[c("NucleosomeFree", 
+                                     "mononucleosome",
+                                     "dinucleosome",
+                                     "trinucleosome")], 
+                          TSS=TSS,
+                          librarySize=librarySize,
+                          seqlev=seqlev,
+                          TSS.filter=0.5,
+                          n.tile = NTILE,
+                          upstream = ups,
+                          downstream = dws)
+## log2 transformed signals
+sigs.log2 <- lapply(sigs, function(.ele) log2(.ele+1))
+#plot heatmap
+featureAlignedHeatmap(sigs.log2, reCenterPeaks(TSS, width=ups+dws),
+                      zeroAt=.5, n.tile=NTILE)
+## get signals normalized for nucleosome-free and nucleosome-bound regions.
+out <- featureAlignedDistribution(sigs, 
+                                  reCenterPeaks(TSS, width=ups+dws),
+                                  zeroAt=.5, n.tile=NTILE, type="l", 
+                                  ylab="Averaged coverage")
+## rescale the nucleosome-free and nucleosome signals to 0~1
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+out <- apply(out, 2, range01)
+matplot(out, type="l", xaxt="n", 
+        xlab="Position (bp)", 
+        ylab="Fraction of signal")
+axis(1, at=seq(0, 100, by=10)+1, 
+     labels=c("-1K", seq(-800, 800, by=200), "1K"), las=2)
+abline(v=seq(0, 100, by=10)+1, lty=2, col="gray")
+```
+
+# Peak Calling
+
+Human
+
+```{bash, eval = FALSE}
+module load MACS2/2.1.0-update/python.2.7.8
+module load bedtools2/2.28.0/gcc.7.1.0
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.human.bam
+do echo $i
+
+macs2 callpeak -t $i -f BAMPE -n $(basename -- $i) \
+-g 2805636331 \
+--outdir human
+
+done
+
+# calculating FRiP
+for f1 in *.narrowPeak
+do echo $f1
+SampleName=`basename ${f1/.narrowPeak/}`
+echo $SampleName
+
+bedtools intersect -a $f1 -b ${SampleName}.human.bam -u | wc -l
+samtools view -@ 4 -c ${SampleName}.human.bam
+
+done
+```
+
+Toxoplasma
+
+```{bash, eval = FALSE}
+module load MACS2/2.1.0-update/python.2.7.8
+module load bedtools2/2.28.0/gcc.7.1.0
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.toxo.bam
+do echo $i
+
+macs2 callpeak -t $i -f BAMPE -n $(basename -- $i) \
+-g  62667338 \
+--outdir toxo
+
+done
+
+# calculating FRiP
+for f1 in *.narrowPeak
+do echo $f1
+SampleName=`basename ${f1/.narrowPeak/}`
+echo $SampleName
+
+bedtools intersect -a $f1 -b ${SampleName}.human.bam -u | wc -l
+samtools view -@ 4 -c ${SampleName}.human.bam
+
+done
+```
+
+## Reproducible peaks
+
+Human
+
+```{bash, eval = FALSE}
+# infected
+chipr -i I1.narrowPeak I2.narrowPeak I3.narrowPeak -m 3 -o Infected
+
+# uninfected
+chipr -i U1.narrowPeak U2.narrowPeak U3.narrowPeak -m 3 -o Uninfected
+```
+
+Toxoplasma
+
+```{bash, eval = FALSE}
+# infected
+chipr -i I1.narrowPeak I2.narrowPeak I3.narrowPeak -m 3 -o Infected
+```
+
+# Quantification
+
+Human
+
+```{r, eval = FALSE}
+# load libraries
+library(rtracklayer)
+library(Rsubread)
+library(GenomicAlignments)
+
+# blacklist: https://www.encodeproject.org/files/ENCFF001TDO/
+blkList <- import.bed("ENCFF001TDO.bed.gz")
+
+# load peaks
+infected.peaks <- toGRanges("Infected_narrowPeak_optimal.bed", format="narrowPeak")
+uninfected.peaks <- toGRanges("Uninfected_narrowPeak_optimal.bed", format="narrowPeak")
+
+# non-redundent peaks between conditions
+myPeaks <- list(Infected = infected.peaks, Uninfected = uninfected.peaks)
+allPeaksSet_nR <- reduce(unlist(GRangesList(myPeaks)))
+overlap <- list()
+for (i in 1:length(myPeaks)) {
+    overlap[[i]] <- allPeaksSet_nR %over% myPeaks[[i]]
+}
+overlapMatrix <- do.call(cbind, overlap)
+colnames(overlapMatrix) <- names(myPeaks)
+mcols(allPeaksSet_nR) <- overlapMatrix
+
+# filter peaks from blacklist and mitochondria 
+nrToCount <- allPeaksSet_nR[!allPeaksSet_nR %over% blkList & !seqnames(allPeaksSet_nR) %in% "chrM"]
+
+# quantification
+bamsToCount <- dir("/Alignment", full.names = TRUE, pattern = "*.\\.bam$")
+myCounts <- summarizeOverlaps(nrToCount, bamsToCount, singleEnd = FALSE, fragments=TRUE)
+colnames(myCounts) <- c("I1", "I2", "I3", "U1", "U2", "U3")
+rownames(myCounts) <- paste(as.data.frame(nrToCount)$seqnames, "_", as.data.frame(nrToCount)$start, "-", as.data.frame(nrToCount)$end, sep = "")
+```
+
+Toxoplasma
+
+```{r, eval = FALSE}
+# load libraries
+library(Rsubread)
+library(GenomicAlignments)
+
+# load peaks
+infected.peaks <- toGRanges("Infected_narrowPeak_optimal.bed", format="narrowPeak")
+
+# quantification
+bamsToCount <- dir("/Alignment", full.names = TRUE, pattern = "*.\\.bam$")
+myCounts <- summarizeOverlaps(infected.peaks, bamsToCount, singleEnd = FALSE, fragments=TRUE)
+colnames(myCounts) <- c("I1", "I2", "I3")
+rownames(myCounts) <- paste(as.data.frame(infected.peaks)$seqnames, "_", as.data.frame(infected.peaks)$start, "-", as.data.frame(infected.peaks)$end, sep = "")
+```
+
+# Alignment tracks
+
+Human
+
+```{bash, eval = FALSE}
+# generate tracks
+module load deeptools/3.1.0/python.2.7.8
+
+scaleFactor=(1.4097380 1.0092271 2.8116395 0.9462418 2.0584715)
+files=(ls *bam)
+
+for ((i = 0; i < ${#files[@]}; ++i))
+do echo ${files[$i]}
+
+bamCoverage -b ${files[$i]} \
+-o $(basename -- ${files[$i]}).bw \
+-of bigwig \
+-p 4 \
+--effectiveGenomeSize 2913022398 \
+--normalizeUsing CPM
+
+done 
+```
+
+Toxoplasma
+
+```{bash, eval = FALSE}
+# generate tracks
+module load deeptools/3.1.0/python.2.7.8
+
+files=(ls *bam)
+
+for ((i = 0; i < ${#files[@]}; ++i))
+do echo ${files[$i]}
+
+bamCoverage -b ${files[$i]} \
+-o $(basename -- ${files[$i]}).bw \
+-of bigwig \
+-p 4 \
+--effectiveGenomeSize 62667338 \
+--normalizeUsing CPM
+
+done 
+```

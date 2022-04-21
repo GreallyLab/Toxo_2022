@@ -1,0 +1,634 @@
+---
+title: "Differential expression analysis of toxoplasma infection in human"
+author: "Ronald Cutler"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+## Loading libraries
+
+```{r, message=FALSE}
+library(DESeq2)
+library(vsn)
+library(affy)
+library(ggplot2)
+library(ggrepel)
+library(factoextra)
+library(FactoMineR)
+library(reshape2)
+library(biomaRt)
+library(EnhancedVolcano)
+library(viridis)
+library(ComplexHeatmap)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(pheatmap)
+
+colors <- viridis(5)[c(1,5)]
+```
+
+## Loading RNA-Seq quantification
+
+```{r}
+directory <- "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/RNA-Seq/Counts"
+
+files <- list.files(path = directory, pattern = "2cols", all.files = FALSE,
+           full.names = FALSE, recursive = FALSE,
+           ignore.case = FALSE, include.dirs = FALSE, no.. = FALSE)
+
+sampleTable <- data.frame(sampleName = c("I1", "I2", "I3", "U1", "U2", "U3"), fileName = files, condition = c(rep("Infected", 3), rep("Uninfected", 3)))
+rownames(sampleTable) <- c("I1", "I2", "I3", "U1", "U2", "U3")
+sampleTable$sampleName <- factor(sampleTable$sampleName)
+sampleTable$condition <- factor(sampleTable$condition)
+
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                       directory = directory,
+                                       design = ~ condition)
+
+# set control
+dds$condition <- relevel(dds$condition, ref = "Uninfected")
+```
+
+# Pre-processing
+
+## Filtering low counts
+
+This filters out genes which have less than 10 read counts when summed
+across all conditions. This is an arbitrary but minimal count filter. We
+are left with 28457 genes to work with.
+
+```{r}
+# length before
+before_len <- length(row.names(dds))
+
+# filtering
+dds_filter <- dds[rowSums(counts(dds)) >= 10]
+
+# length after
+after_len <- length(row.names(dds_filter))
+
+# amount filtered
+before_len - after_len
+
+# plot before and after length
+barplot(c(before_len, after_len), xlab = "Filtering", ylab = "Amount of genes", col = colors)
+
+# for each column (sample) count the number of counts less than or equal to ten, get the proportion with the mean() function, and then multiply this by 100
+proportion_10 <- apply(counts(dds_filter), MARGIN = 2, function(x) 100*mean(x<= 10))
+
+# plot a barplot where the colors correspond to the condition
+barplot(proportion_10,
+        horiz = TRUE,
+        las = 1,
+        cex.names = 0.5,
+        col = colors[colData(dds)$condition],
+       ylab='Samples',
+       xlab='% of counts less than 10',
+       main="Percentage of counts less than 10 per sample")
+```
+
+Counts and gene detection
+
+```{r}
+# total counts 
+barplot(colSums(counts(dds_filter)),
+        horiz = TRUE,
+        las = 1,
+        cex.names = 1,
+        col = colors[colData(dds)$condition],
+       ylab='Samples',
+       xlab='Counts',
+       main = "Total Counts")
+
+# total genes
+barplot(colSums(counts(dds_filter)>= 3),
+        horiz = TRUE,
+        las = 1,
+        cex.names = 1,
+        col = colors[colData(dds)$condition],
+       ylab='Samples',
+       xlab='# Genes',
+       main = "Genes detected")
+```
+
+Unnomarlized count distribution
+
+```{r}
+# plotting an unnormalized density plot of the log transformed counts 
+plotDensity(log2(counts(dds_filter) + 1),
+            lty=1,
+            col=colors[colData(dds)$condition],
+            lwd=1,
+            xlab = "log2(Counts + 1)", 
+            main = "Filtered Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# plotting an unnormalized box plot of the log transformed counts 
+boxplot(log2(counts(dds_filter) + 1),
+        col = colors[colData(dds)$condition],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Filtered Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+```
+
+## Running DESeq2
+
+```{r}
+# set control
+dds_filter$condition <- relevel(dds_filter$condition, ref = "Uninfected")
+
+# Run DESeq
+dds_filter <- DESeq(dds_filter)
+
+# output normalized counts
+write.csv(counts(dds_filter, normalize = TRUE), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/RNA-Seq/DESeq2/DESeq2_normalized_counts_RNA.csv", row.names = TRUE)
+```
+
+Normalized count distribution
+
+```{r}
+# density plot normalized
+plotDensity(log2(counts(dds_filter, normalized = TRUE) + 1),
+            lty=1,
+            col=colors[colData(dds_filter)$condition],
+            lwd=1,
+            xlab = "log2(Counts + 1)",
+            main = "Normalized Counts")
+legend("topright",
+       legend=levels(colData(dds_filter)$condition),
+       lwd=1, col = colors)
+
+# box plot normalized
+boxplot(log2(counts(dds_filter, normalized = TRUE) + 1),
+        col = colors[colData(dds_filter)$condition],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Normalized Counts")
+legend("topright",
+       legend=levels(colData(dds_filter)$condition),
+       lwd=1, col = colors)
+```
+
+## Mean Variance Relationship
+
+Plotting the mean and variance to examine whether the data appears to
+have a non-linear relationship between the variance and mean which would
+support the use of a negative binomial distribution to model read
+counts. This is done by comparing the mean-variance plot to a linear
+line.
+
+```{r}
+## Computing mean and variance
+norm.counts <- counts(dds_filter, normalized=TRUE) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="Mean-variance relationship", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+abline(a=1, b=1, col="red") # a linear line to compare against 
+```
+
+## Estimation of Dispersion
+
+This gives us a feel for what the dispersion parameter is in our model
+and what the effect of dispersion shrinkage is. We see that there are
+135 dispersion shrinkage outliers which will keep their original
+dispersion before shrinkage.
+
+```{r}
+plotDispEsts(dds_filter)
+sum(mcols(dds_filter,use.names=TRUE)[,"dispOutlier"])
+```
+
+## Transform counts to stabilize mean-variance for clustering
+
+Using two transformations in order to stabilize the mean-variance
+relationship in order to minimize the influence of genes with low read
+counts when performing unsupervised analysis.
+
+```{r}
+dds_rlog <- rlog(dds_filter)
+dds_vst <- vst(dds_filter)
+```
+
+Log2 transformed counts just for comparison. We can see that this does
+not stabilize the mean-variance relationship.
+
+```{r}
+dds_log2 <- log2(counts(dds_filter) + 1)
+meanSdPlot(dds_log2)
+```
+
+Compare rlog and vst transformations. We choose to use the VST
+transformation here as the line appear to be more horizontal than the
+rlog fitted line.
+
+```{r}
+meanSdPlot(assay(dds_rlog))
+meanSdPlot(assay(dds_vst))
+
+## better plot 
+norm.counts <- assay(dds_filter) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="Non-transformed", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+
+## better plot 
+norm.counts <- assay(dds_vst) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="VST transformed", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+
+write.csv(assay(dds_vst), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/RNA-Seq/DESeq2/DESeq2_vst_counts_RNA.csv", row.names = TRUE)
+```
+
+## Principle Component Analysis
+
+PCA clustering and plotting function
+
+```{r}
+# PCA plot of samples
+PCAPlotter <- function(ntop, vsd, shape) {
+  # getting most variable genes 
+  Pvars <- rowVars(assay(vsd))
+  select <- order(Pvars, decreasing = TRUE)[seq_len(min(ntop, 
+          length(Pvars)))]
+  sampleNO <- rownames(colData(vsd))
+
+  # calculate pca - zero centering variables and scaling where all   variables have unit variance
+  PCA <- prcomp(t(assay(vsd)[select, ]), scale = T, center = TRUE)
+  percentVar <- round(100*PCA$sdev^2/sum(PCA$sdev^2),1)
+  dataGG = data.frame(PC1 = PCA$x[,1], PC2 = PCA$x[,2], 
+                      PC3 = PCA$x[,3], PC4 = PCA$x[,4], 
+                      condition = colData(vsd)$condition)
+  # plotting
+  print(ggplot(data = dataGG) +
+        geom_point(data = dataGG, mapping = aes(x = PC1, y = PC2, color =  condition, shape = shape), size = 6) +
+        scale_shape_identity() +
+  	    labs(title = paste("PC1 vs PC2, Top", toString(ntop), "Variable Genes"),
+        x = paste0("PC1: ", round(percentVar[1],4), "%"),
+        y = paste0("PC2: ", round(percentVar[2],4), "%")) +
+        scale_colour_viridis(discrete=TRUE) +
+  	    #scale_colour_brewer(type="qual", palette=2) +
+  	    theme_classic() +
+  	    #scale_color_discrete(name = "Condition") +
+  	    theme(axis.text = element_text(size = 15),
+  	    legend.box = "horizontal",
+        axis.title.y = element_text(size = 15, face = "bold"),
+        axis.title.x = element_text(size = 15, face = "bold"),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.background = element_blank(),
+        legend.box.background = element_rect(colour = "black"),
+        legend.position = "top") +
+  	    geom_label_repel(aes(label = sampleNO, x = PC1, y = PC2), color = "black") +
+        guides(colour = guide_legend(override.aes = list(shape = shape))))
+                                     
+  return(PCA)
+}
+```
+
+Plot PCA
+
+-   Using different number of variable genes to see how stable
+    clustering is
+
+```{r}
+PCA <- PCAPlotter(500, dds_vst, 15)
+PCA <- PCAPlotter(1000, dds_vst, 15)
+PCA <- PCAPlotter(5000, dds_vst, 15)
+PCA <- PCAPlotter(length(row.names(dds_filter)), dds_vst, 15)
+
+PCA <- PCAPlotter(5000, dds_vst, 15)
+
+# get importance of each component
+fviz_eig(PCA, addlabels = TRUE)
+
+var <- get_pca_var(PCA)
+# contributions of individual genes to each PC
+fviz_contrib(PCA, choice = "var", axes = 1, top = 20, rotate = TRUE, sort.val = "asc")
+fviz_contrib(PCA, choice = "var", axes = 2, top = 20, rotate = TRUE, sort.val = "asc")
+
+# contributions of individual samples to each PC 
+fviz_contrib(PCA, choice = "ind", axes = 1, top = 20, rotate = TRUE, sort.val = "asc")
+fviz_contrib(PCA, choice = "ind", axes = 2, top = 20, rotate = TRUE, sort.val = "asc")
+```
+
+## Heatmap of the sample-to-sample distances
+
+```{r}
+sampleDists <- dist(t(assay(dds_vst)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colnames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colors <- magma(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+# Differential Expression Results
+
+Output function
+
+```{r}
+writeOutput <- function(res, dds, cond, dir) {
+  resOrdered <- res[order(res$padj),]
+  resdata <- merge(as.data.frame(resOrdered), as.data.frame(counts(dds, normalized=TRUE)), by="row.names", sort=FALSE, all = TRUE) #includes normalized counts in output csv
+  names(resdata)[1] <- "Gene" # set header of first column
+  outfile <- paste(cond[1], cond[length(cond)], "DESeq2.csv", sep = "_")
+  outfile <- paste(dir, outfile, sep = "")
+  write.csv(as.data.frame(resdata), file = outfile, row.names = FALSE)
+}
+
+# setting output dir
+dir <- "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/RNA-Seq/DESeq2/"
+```
+
+## Uninfected vs Infected
+
+First we assign the results to a new variable, then get how many
+significantly DE genes there are using the summary() function. After
+this we check the p-value distribution which is what we expect to have a
+leftward skew if there are many significant genes, and to be completely
+uniform if there are no significant DE genes.
+
+```{r}
+# Extract the t0 vs t5 result using an alpha threshold of 0.05
+res <- results(dds_filter, alpha = 0.05, name = "condition_Infected_vs_Uninfected")
+
+# p-value distribution histogram
+hist(res$pvalue, main = "P-value distribution Uninfected vs Infected", xlab = "P-value", ylab = "Frequency", col = "lavender")
+
+# get shrunken fold change
+# remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds
+res <- lfcShrink(dds = dds_filter, res = res, coef = "condition_Infected_vs_Uninfected")
+
+# get a summary of the amount of significantly differentially expressed genes 
+summary(res, alpha = 0.05)
+    
+# write the results
+writeOutput(res, dds_filter, c("Uninfected", "Infected"), dir)
+
+# look at most differentially expressed
+plotCounts(dds_filter, gene=which.min(res$padj), intgroup="condition")
+```
+
+Plot counts of ADAMTS genes
+
+-   <https://string-db.org/cgi/network?taskId=bCzJ6TmF4Ewr&sessionId=bHwWTvhrJj6I>
+
+```{r}
+genes <- c("ADAMTS15", "ADAMTS3", "ADAMTSL2", "ADAMTSL1", "ADAMTS12", "ADAMTS14", "ADAMTS7", "ADAMTS19", "ADAMTS13", "THBS1", "THSD1")
+adamts <- res[grep(paste(genes,collapse="|"), rownames(res)),]
+adamts <- adamts[order(adamts$padj),]
+
+adamts.counts <- counts(dds_filter, normalized = TRUE)
+adamts.counts <- subset(adamts.counts, rownames(adamts.counts) %in% rownames(adamts))
+colnames(adamts.counts) <- c(rep("Infected", 3), rep("Uninfected", 3))
+
+adamts.counts.melt <- melt(adamts.counts)
+colnames(adamts.counts.melt) <- c("Gene", "Condition", "Value")
+adamts.counts.melt$Gene <- factor(adamts.counts.melt$Gene, levels = rownames(adamts))
+
+ggplot(adamts.counts.melt, aes(x = Gene, y = Value, fill = Condition)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize = 1.5) +
+  theme_classic() +
+        scale_y_log10() +
+        xlab("") +
+        ylab("log10 Normalized Counts") +
+	theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_fill_viridis(discrete=TRUE, direction = -1) +
+  theme(legend.position="top",
+        text=element_text(size=15, color = "black", family="Arial"),
+        axis.text=element_text(color="black", family="Arial"))
+```
+
+Volcano Plot
+
+```{r}
+keyvals <- ifelse(
+    res$log2FoldChange < -2, colors[1],
+    ifelse(res$log2FoldChange > 2, colors[2],
+    'black'))
+  
+EnhancedVolcano(res,
+  lab = rownames(res),
+  x = 'log2FoldChange',
+  y = 'pvalue',
+  pCutoffCol = 'padj',
+  pCutoff = 0.05,
+  FCcutoff = 2,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  pointSize = 3.0,
+  labSize = 4.0,
+  labCol = 'black',
+  labFace = 'bold',
+  boxedLabels = FALSE,
+  colAlpha = 4/5,
+  drawConnectors = TRUE,
+  widthConnectors = 1.0,
+  colConnectors = 'black',
+  legendPosition= 'none',
+  subtitle = NULL,
+  colCustom = keyvals,
+  title = NULL,
+  caption = NULL)
+```
+
+Heatmap
+
+```{r}
+# omit NAs 
+res <- na.omit(res)
+# set up matrix
+dds_vst.mat <- as.matrix(assay(dds_vst))
+dds_vst.mat <- dds_vst.mat[,c(4,5,6,1,2,3)]
+# getting differentially expressed genes 
+dds_vst.mat.DE <- dds_vst.mat[rownames(res[res$padj < 0.05,]),]
+
+colors <- viridis(5)[c(1,5)]
+col <- list(Condition = c(
+            "Infected" = colors[2],
+            "Uninfected" = colors[1]))
+
+condition <- factor(c(rep("Uninfected", 3), rep("Infected", 3)))
+ha <- HeatmapAnnotation(Condition = condition, col = col)
+
+scaled.mat <- t(scale(t(dds_vst.mat.DE),center=TRUE,scale=TRUE))
+
+Heatmap(scaled.mat,
+        name = "Z-score", #title of legend
+        #col=inferno(100),
+        row_names_gp = gpar(fontsize = 7), # Text size for row names
+        top_annotation = ha,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = FALSE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(20, "mm"))
+```
+
+# Gene Set Enrichment
+
+Setting up
+
+```{r}
+# sort by signed fold change * -log10pvalue
+res$score <- sign(res$log2FoldChange) * -log10(res$pvalue)
+res.sorted <- res[order(res$score, decreasing = TRUE),]
+res.list <- res.sorted$score
+names(res.list) <- rownames(res.sorted)
+res.list <- na.omit(res.list)
+
+# convert gene symbols 
+converted <- bitr(names(res.list), fromType = "SYMBOL",
+        toType = c("ENTREZID"),
+        OrgDb = org.Hs.eg.db)
+
+# map back
+names(res.list) <- converted$ENTREZID[match(names(res.list), converted$SYMBOL)]
+
+# fold change
+fc.list <- res$log2FoldChange
+names(fc.list) <- converted$ENTREZID[match(names(fc.list), converted$SYMBOL)]
+```
+
+## Gene ontology
+
+### Biological Process
+
+```{r}
+bp <- gseGO(geneList     = res.list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE,
+              seed = TRUE)
+
+bp.simple <- simplify(bp)
+bp.simple <- setReadable(bp.simple, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+direction <- c('activated' = "Upregulated", 'suppressed' = "Downregulated")
+dotplot(bp.simple, showCategory=10, title = "Biological Process", split=".sign", label_format = function(x) stringr::str_wrap(x, width=40)) + 
+  facet_grid(.~factor(.sign, levels = c("suppressed", "activated")), labeller = as_labeller(direction)) + 
+  scale_color_viridis(option = "viridis", direction = 1)
+dotplot(bp.simple, showCategory=25, title = "Biological Process", x = "NES", label_format = function(x) stringr::str_wrap(x, width=40)) +
+  scale_color_viridis(option = "viridis", direction = 1)
+
+
+write.csv(bp.simple@result, paste(dir, "/Uninfected_vs_Infected_GO_BP.csv", sep = ""))
+
+# upregulated
+bp.simple.up <- bp.simple@result[bp.simple@result$NES > 0,]$Description
+dotplot(bp.simple, title = "Biological Process Upregulated", label_format = function(x) stringr::str_wrap(x, width=40), showCategory = bp.simple.up[1:25]) + 
+  scale_color_viridis(option = "viridis", direction = 1)
+
+cnetplot(bp.simple, foldChange=fc.list, colorEdge = TRUE, showCategory = bp.simple.up[1:25], shadowtext = 'category', cex_label_category = 1, categorySize="pvalue", node_label = "category") + theme(legend.position = "none")
+
+# downregulated
+bp.simple.down <- bp.simple@result[bp.simple@result$NES < 0,]$Description
+dotplot(bp.simple, title = "Biological Process Downregulated", label_format = function(x) stringr::str_wrap(x, width=40), showCategory = bp.simple.down[1:25]) + 
+  scale_color_viridis(option = "viridis", direction = 1)
+
+# metabolism
+bp.metabolism <- bp.simple@result[grep("metaboli", bp.simple@result$Description),]$Description
+emapplot(pairwise_termsim(bp.simple),  showCategory = bp.metabolism)
+bp.metabolism <-  bp.metabolism[1:4]# only get those related to cholesterol
+cnetplot(bp.simple, foldChange=fc.list, colorEdge = TRUE, showCategory = bp.metabolism, shadowtext = 'category', cex_label_category = 1, categorySize="pvalue", node_label = "all")
+cnetplot(bp.simple, foldChange=fc.list, colorEdge = TRUE, showCategory = bp.metabolism, shadowtext = 'category', cex_label_category = 1.5, categorySize="pvalue", node_label = "category") + theme(legend.position = "none")
+heatplot(bp.simple, foldChange = fc.list, showCategory = bp.metabolism) + coord_flip()
+
+# immue response
+bp.immune <- bp.simple@result[grep("immune|cytokine|inflam", bp.simple@result$Description),]$Description
+emapplot(pairwise_termsim(bp.simple),  showCategory = bp.immune)
+bp.immune <- bp.immune[1:5] # only get top 5
+cnetplot(bp.simple, foldChange=fc.list, colorEdge = TRUE, showCategory = bp.immune, shadowtext = 'category', cex_label_category = 1, categorySize="pvalue", node_label = "all")
+cnetplot(bp.simple, foldChange=fc.list, colorEdge = TRUE, showCategory = bp.immune, shadowtext = 'category', cex_label_category = 1.5, categorySize="pvalue", node_label = "category") + theme(legend.position = "none")
+heatplot(bp.simple, foldChange = fc.list, showCategory = bp.immune) + coord_flip()
+
+# ribonucleoprotein biogenesis
+bp.biogenesis <- bp.simple@result[grep("biogenesis|replication|cycle", bp.simple@result$Description),]$Description
+emapplot(pairwise_termsim(bp.simple),  showCategory = bp.biogenesis)
+cnetplot(bp.simple, foldChange=fc.list, colorEdge = TRUE, showCategory = bp.biogenesis, shadowtext = 'category', cex_label_category = 1, categorySize="pvalue", node_label = "all", layout = "kk")
+cnetplot(bp.simple, foldChange=fc.list, colorEdge = TRUE, showCategory = bp.biogenesis, shadowtext = 'category', cex_label_category = 1.5, categorySize="pvalue", node_label = "category", layout = "kk") + theme(legend.position = "none")
+heatplot(bp.simple, foldChange = fc.list, showCategory = bp.immune) + coord_flip()
+```
+
+### Molecular Function
+
+```{r}
+mf <- gseGO(geneList     = res.list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF",
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+mf.simple <- simplify(mf)
+mf.simple <- setReadable(mf.simple, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+direction <- c('activated' = "Upregulated", 'suppressed' = "Downregulated")
+dotplot(mf.simple, showCategory=10, title = "Molecular Function", split=".sign", label_format = function(x) stringr::str_wrap(x, width=40)) + 
+  facet_grid(.~factor(.sign, levels = c("suppressed", "activated")), labeller = as_labeller(direction)) + 
+  scale_color_viridis(option = "viridis", direction = 1)
+
+write.csv(mf.simple@result, paste(dir, "/Uninfected_vs_Infected_GO_MF.csv", sep = ""))
+```
+
+### Cellular Component
+
+```{r}
+cc <- gseGO(geneList     = res.list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC",
+              minGSSize    = 10,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+cc.simple <- simplify(cc)
+cc.simple <- setReadable(cc.simple, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+dotplot(cc.simple, showCategory=10, title = "Cellular Component", split=".sign", label_format = function(x) stringr::str_wrap(x, width=40)) + 
+  facet_grid(.~factor(.sign, levels = c("suppressed", "activated")), labeller = as_labeller(direction)) + 
+  scale_color_viridis(option = "viridis", direction = 1)
+
+write.csv(cc.simple@result, paste(dir, "/Uninfected_vs_Infected_GO_CC.csv", sep = ""))
+```

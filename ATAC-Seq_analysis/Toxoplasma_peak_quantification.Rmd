@@ -1,0 +1,55 @@
+---
+title: "Toxoplasma Peak Quantification"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load libraries
+```{r}
+library(rtracklayer)
+library(Rsubread)
+library(GenomicAlignments)
+library(ChIPpeakAnno)
+```
+
+Load optimal peaks
+```{r}
+infected.peaks <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Peakcalling/Infected_optimal.bed", format="narrowPeak")
+```
+
+## Get overlap of peaks between replicates
+
+Infected
+```{r}
+# load peaks
+infected.peaks.1 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Peakcalling/I1.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.sorted.shift.bam.toxo.bam_peaks.narrowPeak", format="narrowPeak")
+infected.peaks.2 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Peakcalling/I2.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.sorted.shift.bam.toxo.bam_peaks.narrowPeak", format="narrowPeak")
+infected.peaks.3 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Peakcalling/I3.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.sorted.shift.bam.toxo.bam_peaks.narrowPeak", format="narrowPeak")
+
+ol <- findOverlapsOfPeaks(infected.peaks.1, infected.peaks.2, infected.peaks.3, connectedPeaks = "keepAll")
+makeVennDiagram(ol, NameOfPeaks = c("I1", "I2", "I3"), fill = c("red", "green", "blue"), fontfamily = "Arial", cex = 1.5, cat.cex = 2, cat.fontfamily = "Arial", cat.default.pos = "outer", print.mode	
+ = c('raw', 'percent'), sigdigs = 2, euler.d = TRUE)
+```
+
+# Quantification
+
+Quantification
+```{r}
+bamsToCount <- dir("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Alignment", full.names = TRUE,
+    pattern = "*.\\.bam$")
+
+myCounts <- summarizeOverlaps(infected.peaks, bamsToCount, singleEnd = FALSE, fragments=TRUE)
+
+colnames(myCounts) <- c("I1", "I2", "I3", "U1", "U2", "U3")
+rownames(myCounts) <- paste(as.data.frame(infected.peaks)$seqnames, "_", as.data.frame(infected.peaks)$start, "-", as.data.frame(infected.peaks)$end, sep = "")
+```
+
+Export counts
+```{r}
+saveRDS(myCounts, file = "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Quantification/Infected_optimal_peaks.counts.rds")
+
+write.csv(cbind(rowData(myCounts), assay(myCounts)), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Quantification/Infected_optimal_peaks.counts.csv", quote = FALSE)
+```

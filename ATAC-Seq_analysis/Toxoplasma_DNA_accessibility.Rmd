@@ -1,0 +1,393 @@
+---
+title: "Differential accessibility analysis of toxoplasma infection in Toxoplasma"
+author: "Ronald Cutler"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+# Loading libraries
+
+```{r}
+library(DESeq2)
+library(tximport)
+library(affy)
+library(ggplot2)
+library(vsn)
+library(ggrepel)
+library(factoextra)
+library(FactoMineR)
+library(genefilter)
+library(reshape2)
+library(RColorBrewer)
+library(pheatmap)
+library(EnhancedVolcano)
+library(viridis)
+library(dplyr)
+library(tracktables)
+library(GenomicFeatures)
+library(ChIPseeker)
+library(ggbio)
+library(readxl)
+library(plyr)
+library(ComplexHeatmap)
+library(clusterProfiler)
+library(enrichplot)
+library(mgsa)
+
+colors <- viridis(5)[c(1,5)]
+```
+
+Loading count table
+
+```{r}
+cnts <- readRDS("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Quantification/Infected_optimal_peaks.counts.rds")
+
+sampleTable <- data.frame(condition = factor(c(rep("Infected", 3), rep("Uninfected", 3))), row.names = colnames(cnts))
+
+dds <- DESeqDataSetFromMatrix(countData = assay(cnts),
+                                       colData = sampleTable,
+                                       design = ~ condition,
+                              rowRanges = rowRanges(cnts))
+```
+
+## Count distribution
+
+-   not a lot of low counts, filtering seems to be uneccessary here
+
+```{r}
+# total counts
+barplot(colSums(counts(dds)),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Counts",
+        main = "Total Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# Unique regions
+barplot(colSums(counts(dds)>0),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Unique Regions",
+        main = "Regions detected")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# plotting an unnormalized density plot of the log transformed counts 
+plotDensity(log2(counts(dds) + 1),
+            lty=1,
+            col=colors[colData(dds)$condition],
+            lwd=1,
+            xlab = "log2(Counts + 1)", 
+            main = "Raw Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# plotting an unnormalized box plot of the log transformed counts 
+boxplot(log2(counts(dds) + 1),
+        col = colors[colData(dds)$condition],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Raw Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+```
+
+Remove uninfected since there are no counts
+
+```{r}
+sampleTable <- data.frame(condition = factor(c(rep("Infected", 3))), row.names = colnames(cnts)[1:3])
+
+dds <- DESeqDataSetFromMatrix(countData = assay(cnts)[,1:3],
+                                       colData = sampleTable,
+                                       design = ~ 1,
+                              rowRanges = rowRanges(cnts)[,1:3])
+```
+
+## Running DESeq
+
+```{r}
+# Run DESeq
+dds <- DESeq(dds)
+```
+
+## Count distribution after normalization
+
+```{r}
+# total reads
+barplot(colSums(counts(dds)),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Fragments",
+        ylab = "Samples",
+        main = "Total Fragments")
+
+# density plot normalized
+plotDensity(log2(counts(dds, normalized = TRUE) + 1),
+            lty=1,
+            col=colors[colData(dds)$condition],
+            lwd=1,
+            xlab = "log2(Counts + 1)",
+            main = "Normalized Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# box plot normalized
+boxplot(log2(counts(dds, normalized = TRUE) + 1),
+        col = colors[colData(dds)$condition],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Normalized Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+```
+
+## Mean Variance Relationship
+
+```{r}
+## Computing mean and variance
+norm.counts <- counts(dds, normalized=TRUE) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="Mean-variance relationship", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+abline(a=1, b=1, col="red") # a linear line to compare against
+```
+
+##Estimation of Dispersion
+
+```{r}
+plotDispEsts(dds)
+sum(mcols(dds,use.names=TRUE)[,"dispOutlier"])
+```
+
+## Transform counts to stabalize mean-variance for clustering
+
+```{r}
+dds_rlog <- rlog(dds, blind = FALSE)
+dds_vst <- vst(dds, blind = FALSE)
+```
+
+Log2 transformed counts just for comparison. It looks like this does a
+good enough job.
+
+```{r}
+dds_log2 <- log2(counts(dds) + 1)
+meanSdPlot(dds_log2)
+```
+
+Compare rlog and vst transformations
+
+```{r}
+meanSdPlot(assay(dds_rlog))
+meanSdPlot(assay(dds_vst))
+```
+
+# Heatmap of the sample-to-sample distances
+
+```{r}
+sampleDists <- dist(t(assay(dds_vst)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colnames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colors <- magma(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+## Correlation between replicates
+
+```{r}
+require(corrplot)
+library("PerformanceAnalytics")
+
+res <- cor(assay(dds_vst))
+
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+
+chart.Correlation(assay(dds_vst), histogram=TRUE, pch=19)
+```
+
+Review results in IGV
+
+```{r}
+dir = "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Toxoplasma/ATAC-Seq/Differential\ Accessiblity/"
+res.granges <- rowRanges(dds)
+res.granges <- cbind(as.data.frame(res.granges@ranges), counts(dds, normalized = TRUE)) # add counts
+res.granges <-res.granges[order(rowRanges(dds)$baseMean, decreasing = TRUE),]
+makebedtable(res.granges, "res.granges.html", dir)
+```
+
+## Annotate results
+
+```{r}
+library(ChIPseeker)
+
+# custom annoation
+chrominfo <- read.table("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/GCF_000006565.2_TGA4_genomic.chrom_info.txt", header = TRUE)
+TxDb.TGA4 <- makeTxDbFromGFF("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/GCF_000006565.2_TGA4_genomic.gff", format = "gff", organism = "Toxoplasma", taxonomyId = 1208370, dbxrefTag = "locus_tag", chrominfo = chrominfo)
+customAnnotation <- list(version="custom", TGA4 = transcripts(TxDb.TGA4))
+
+# annotate
+res.granges.annot <- rowRanges(dds)
+res.granges.annot@elementMetadata <- cbind(res.granges.annot@elementMetadata, assay(dds_vst))
+res.granges.annot <- annotatePeak(res.granges.annot, TxDb = TxDb.TGA4, level = "gene")
+
+#  plot
+plotAnnoPie(res.granges.annot)
+plotDistToTSS(res.granges.annot,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS")
+
+res.granges.annot <- as.GRanges(res.granges.annot)
+res.granges.annot <- res.granges.annot[abs(res.granges.annot$distanceToTSS) < 5000]
+
+#write the results
+write.csv(res.granges.annot, paste(dir, "Infected_DESeq2_annotated_chipseeker_ATAC.csv", sep = ""))
+output <- res.granges.annot[,22:32]
+names(output) <- NULL
+makebedtable(output, "res.granges.annotate.chipseeker.html", dir)
+```
+
+## Explore Results
+
+Combine annotated and non-annotated
+
+```{r}
+res.granges.merge <- merge(rowRanges(dds), res.granges.annot)
+
+# add meta data
+tga4_map <- read.table("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/ID-description_mapping.txt", sep = "\t")
+mcols(res.granges.merge)$description <- tga4_map[match(res.granges.merge$geneId, tga4_map$V1), ]$V2
+```
+
+Plot peaks over chromosomes
+
+```{r}
+chrs <- c("NC_031467.1",	"NC_031468.1",	"NC_031469.1",	"NC_031470.1",	"NC_031471.1",	"NC_031472.1",	"NC_031473.1",	"NC_031474.1",	"NC_031475.1",	"NC_031476.1",	"NC_031477.1",	"NC_031478.1",	"NC_031479.1",	"NC_031480.1")
+map <- read_excel("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/NCBI_chromosome_mapping.xlsx")
+dds.granges.plot <- res.granges.merge
+dds.granges.plot <- keepSeqlevels(dds.granges.plot, pruning.mode = "tidy", chrs)
+seqlevels(dds.granges.plot) <- map$`Molecule name`[-c(15:16)] # leave out unmappedContig and apicoplast
+
+# only show top 10 labels
+dds.granges.plot <- dds.granges.plot[order(dds.granges.plot$baseMean, decreasing = TRUE),]
+labels <- dds.granges.plot$description
+dds.granges.plot$description <- ""
+dds.granges.plot$description[1:10] <- labels[1:10]
+
+plotGrandLinear(dds.granges.plot, aes(y = log2(baseMean)), color = c("red", "blue"), ylab = "Log2(mean accessibility)", spaceline = TRUE, xlim = c(0, 70000000)) +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        text = element_text(size = 15, family = "Arial")) +
+  geom_text_repel(aes(label = dds.granges.plot$description), color = "black", max.overlaps = Inf, size = 5)
+
+autoplot(dds.granges.plot, layout="karyogram", aes(color = log2(baseMean), fill = log2(baseMean))) +
+  scale_color_gradient(low="blue", high="red") +
+  scale_fill_gradient(low="blue", high="red")
+```
+
+Heatmap 
+```{r}
+dds_vst.mat <- as.matrix(res.granges.annot@elementMetadata[,c("I1", "I2", "I3")])
+
+# divide into 3 clusters 
+clust <- kmeans(dds_vst.mat, 3)
+
+split <- factor(paste0("Cluster\n", clust$cluster), levels=c("Cluster\n1","Cluster\n2","Cluster\n3"))
+
+HM <- Heatmap(dds_vst.mat, 
+        name = "Variance-stabilized Accessibility", 
+        row_names_gp = gpar(fontsize = 7), 
+        split = split,
+        cluster_row_slices = TRUE,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = FALSE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(20, "mm"),
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(HM, heatmap_legend_side = "bottom")
+```
+
+# Gene ontology analysis
+
+Setting up
+
+```{r}
+high <- res.granges.annot$geneId[clust$cluster == 1]
+high <- high[-c(1:7)] # remove apicoplast
+medium <- res.granges.annot$geneId[clust$cluster == 2]
+low <- res.granges.annot$geneId[clust$cluster == 3]
+
+## build GO database
+# read GO annotation file
+GAF <- readGAF(filename="/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/ME49/ToxoDB-53_TgondiiME49_GO.gaf")
+# extract relevant info.
+# unfortunately could not find accessor functions for all required
+# info, thus sometimes had to utilize object slots directly (with @)
+mapping.index <-  GAF@itemName2ItemIndex
+ID.annotations <- itemAnnotations(GAF)
+
+GO.sets <- GAF@sets
+GO.annotation <- setAnnotations(GAF)
+
+
+# create a 2-column data frame with GOID and ID index
+# after little further processing, this will be used as input for clusterProfiler
+GO.df <- data.frame("GOID" = rep(names(GO.sets), sapply(GO.sets, length)),
+        "ID.index" = unlist(GO.sets),  row.names = NULL)
+
+
+# do some processing for objects GO.annotation and GO.df
+# in both remove category 'all',
+# and to GO.df also add column with Uniprot ids
+
+# GO.annotation
+GO.annotation <- GO.annotation[GO.annotation[,"term"] != "all", ]
+GO.annotation[,"GOID"] <- rownames(GO.annotation)
+
+# GO.df
+GO.df <- GO.df[GO.df[,"GOID"] != "all", ]
+GO.df[,"GeneID"] <- names(mapping.index [GO.df[,"ID.index"] ])
+```
+
+Compare clusters
+
+```{r}
+cluster.list <- list(High = high, Medium = medium, Low = low)
+ck <- compareCluster(geneCluster = cluster.list, fun = "enricher", TERM2GENE = GO.df[ ,c("GOID","GeneID")],TERM2NAME = GO.annotation[ ,c("GOID", "term")])
+dotplot(ck, showCategory = 20)
+write.csv(ck@compareClusterResult, paste(dir, "GO_enrichment.csv", sep = ""))
+```

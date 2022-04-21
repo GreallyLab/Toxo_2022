@@ -1,0 +1,365 @@
+---
+title: "Processing of toxoplasma infection RNA-Seq data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+# Raw read quality control
+
+Initial raw read assessment
+
+-   Illumina universal adapters detected in all samples towards end of
+    reads
+
+```{bash, eval = FALSE}
+module load FastQC/0.11.4/java.1.8.0_20
+module load python/3.7.3/gcc.4.4.7
+
+fastqc -t 4 -o FastQC \
+I1_RNAseq_fastq_files/I1_RNAseq_HFF.AC263LACXX.lane_2_P0_I10.hg19.sequence.fastq.bz2 I1_RNAseq_fastq_files/I1_RNAseq_HFF.AC263LACXX.lane_8_P0_I10.hg19.sequence.fastq.bz2 I2_RNAseq_fastq_files/I2_RNAseq_HFF.AC263LACXX.lane_2_P0_I13.hg19.sequence.fastq.bz2 I2_RNAseq_fastq_files/I2_RNAseq_HFF.AC263LACXX.lane_8_P0_I13.hg19.sequence.fastq.bz2 I3_RNAseq_fastq_files/I3_RNAseq_HFF.AC263LACXX.lane_2_P0_I18.hg19.sequence.fastq.bz2 I3_RNAseq_fastq_files/I3_RNAseq_HFF.AC263LACXX.lane_8_P0_I18.hg19.sequence.fastq.bz2 U1_RNAseq_fastq_files/U1_RNAseq_HFF.AC263LACXX.lane_2_P0_I2.hg19.sequence.fastq.bz2 U1_RNAseq_fastq_files/U1_RNAseq_HFF.AC263LACXX.lane_8_P0_I2.hg19.sequence.fastq.bz2 U2_RNAseq_fastq_files/U2_RNAseq_HFF.AC263LACXX.lane_2_P0_I4.hg19.sequence.fastq.bz2 U2_RNAseq_fastq_files/U2_RNAseq_HFF.AC263LACXX.lane_8_P0_I4.hg19.sequence.fastq.bz2 U3_RNAseq_fastq_files/U3_RNAseq_HFF.AC263LACXX.lane_2_P0_I7.hg19.sequence.fastq.bz2 U3_RNAseq_fastq_files/U3_RNAseq_HFF.AC263LACXX.lane_8_P0_I7.hg19.sequence.fastq.bz2
+
+multiqc . -o multiqc
+```
+
+Read trimming and re-assessment
+
+-   Adapters no longer detected and mean Phred score improved
+
+```{bash, eval = FALSE}
+module load trim_galore/0.6.5 
+module load cutadapt/2.5/python.3.7.3
+module load python/3.7.3/gcc.4.4.7
+
+trim_galore --fastqc -o Trimmed -j 4 \
+I1_RNAseq_fastq_files/I1_RNAseq_HFF.AC263LACXX.lane_2_P0_I10.hg19.sequence.fastq.bz2 I1_RNAseq_fastq_files/I1_RNAseq_HFF.AC263LACXX.lane_8_P0_I10.hg19.sequence.fastq.bz2 I2_RNAseq_fastq_files/I2_RNAseq_HFF.AC263LACXX.lane_2_P0_I13.hg19.sequence.fastq.bz2 I2_RNAseq_fastq_files/I2_RNAseq_HFF.AC263LACXX.lane_8_P0_I13.hg19.sequence.fastq.bz2 I3_RNAseq_fastq_files/I3_RNAseq_HFF.AC263LACXX.lane_2_P0_I18.hg19.sequence.fastq.bz2 I3_RNAseq_fastq_files/I3_RNAseq_HFF.AC263LACXX.lane_8_P0_I18.hg19.sequence.fastq.bz2 U1_RNAseq_fastq_files/U1_RNAseq_HFF.AC263LACXX.lane_2_P0_I2.hg19.sequence.fastq.bz2 U1_RNAseq_fastq_files/U1_RNAseq_HFF.AC263LACXX.lane_8_P0_I2.hg19.sequence.fastq.bz2 U2_RNAseq_fastq_files/U2_RNAseq_HFF.AC263LACXX.lane_2_P0_I4.hg19.sequence.fastq.bz2 U2_RNAseq_fastq_files/U2_RNAseq_HFF.AC263LACXX.lane_8_P0_I4.hg19.sequence.fastq.bz2 U3_RNAseq_fastq_files/U3_RNAseq_HFF.AC263LACXX.lane_2_P0_I7.hg19.sequence.fastq.bz2 U3_RNAseq_fastq_files/U3_RNAseq_HFF.AC263LACXX.lane_8_P0_I7.hg19.sequence.fastq.bz2
+
+multiqc . -o multiqc
+```
+
+Merge reads from separate lanes
+
+```{bash, eval = FALSE}
+module load samtools/1.9/gcc.7.1.0
+
+samtools merge -@ 4 I1_merged.bam I1_RNAseq_HFF.AC263LACXX.lane_2_P0_I10.hg19.sequence.fastq.bz2_trimmed.fq.bam I1_RNAseq_HFF.AC263LACXX.lane_8_P0_I10.hg19.sequence.fastq.bz2_trimmed.fq.bam
+
+samtools merge -@ 4 I2_merged.bam I2_RNAseq_HFF.AC263LACXX.lane_2_P0_I13.hg19.sequence.fastq.bz2_trimmed.fq.bam I2_RNAseq_HFF.AC263LACXX.lane_8_P0_I13.hg19.sequence.fastq.bz2_trimmed.fq.bam
+
+samtools merge -@ 4 I3_merged.bam I3_RNAseq_HFF.AC263LACXX.lane_2_P0_I18.hg19.sequence.fastq.bz2_trimmed.fq.bam I3_RNAseq_HFF.AC263LACXX.lane_8_P0_I18.hg19.sequence.fastq.bz2_trimmed.fq.bam
+
+samtools merge -@ 4 U1_merged.bam U1_RNAseq_HFF.AC263LACXX.lane_2_P0_I2.hg19.sequence.fastq.bz2_trimmed.fq.bam U1_RNAseq_HFF.AC263LACXX.lane_8_P0_I2.hg19.sequence.fastq.bz2_trimmed.fq.bam
+
+samtools merge -@ 4 U2_merged.bam U2_RNAseq_HFF.AC263LACXX.lane_2_P0_I4.hg19.sequence.fastq.bz2_trimmed.fq.bam U2_RNAseq_HFF.AC263LACXX.lane_8_P0_I4.hg19.sequence.fastq.bz2_trimmed.fq.bam
+
+samtools merge -@ 4 U3_merged.bam U3_RNAseq_HFF.AC263LACXX.lane_2_P0_I7.hg19.sequence.fastq.bz2_trimmed.fq.bam U3_RNAseq_HFF.AC263LACXX.lane_8_P0_I7.hg19.sequence.fastq.bz2_trimmed.fq.bam
+```
+
+# Alignment
+
+Downloading genomes and annotations
+
+-   GRCh38: <https://www.ncbi.nlm.nih.gov/assembly/GCF_000001405.26/>
+
+-   GRCh38 decoy:
+    <https://www.ncbi.nlm.nih.gov/assembly/GCA_000786075.2/>
+
+-   Toxoplasma ME49 (TGA4):
+    <https://www.ncbi.nlm.nih.gov/assembly/GCF_000006565.2/>
+
+Combining human, human decoy, and toxoplasma genomes
+
+```{bash, eval = FALSE}
+cat GCA_000001405.15_GRCh38_full_analysis_set.fna \
+GCA_000786075.2_hs38d1_genomic.fna \
+GCF_000006565.2_TGA4_genomic.fna \
+> GCA_000001405.15_GRCh38_full_analysis_set-GCA_000786075.2_hs38d1_genomic-GCF_000006565.2_TGA4_genomic.fna
+```
+
+Building Hisat2 index
+
+```{bash, eval = FALSE}
+module load HISAT2/2.0.4
+
+hisat2-build -p 4 \
+GCA_000001405.15_GRCh38_full_analysis_set-GCA_000786075.2_hs38d1_genomic-GCF_00000656  5.2_TGA4_genomic.fna \
+Hisat2
+```
+
+Alignment
+
+```{bash, eval = FALSE}
+module load HISAT2/2.0.4
+module load bowtie2/2.3.5.1
+module load samtools/1.9/gcc.7.1.0
+
+for i in Trimmed/*.fq
+do echo $i
+
+hisat2 -t -p 4 \
+-x Hisat2 \
+-U $i \
+--met-file $(basename -- $i).alignment_summary.txt \
+| samtools view -@ 4 -Shu - \
+| samtools sort - -n -@ 4 -O bam \
+-o $(basename -- $i).bam
+
+done
+```
+
+Split reads into human and toxoplasma
+
+```{bash, eval = FALSE}
+module load samtools/1.9/gcc.7.1.0
+
+for i in *.merged.bam
+do echo $i
+
+## extract toxo reads
+samtools view -@ 4 -h $i | grep -f GCF_000006565.2_TGA4_genomic_chromosomes.txt | samtools sort - -n -@ 4 -O bam -o $(basename -- $i).toxo.bam
+
+## index reads
+samtools index -@ 4 $(basename -- $i).toxo.bam
+
+## alignment stats
+samtools flagstat -@ 4 $(basename -- $i).toxo.bam > $(basename -- $i).toxo.stat
+
+## filter out toxo reads
+samtools view -@ 4 -h $i | grep -v -f GCA_013099955.1_tgrh88_genomic_chromosomes.txt | samtools sort - -n -@ 4 -O bam -o $(basename -- $i).human.bam
+
+## index reads
+samtools index -@ 4 $(basename -- $i).human.bam
+
+## stats reads
+samtools flagstat -@ 4 $(basename -- $i).human.bam > $(basename -- $i).human.stat
+
+done
+```
+
+Alignment quality control
+
+-   Done separately for each organism, only human is shown here
+
+```{bash, eval = FALSE}
+module load qualimap/v2.2.1
+module load RSeQC/2.6.4/python.2.7.8
+
+annot="Homo_sapiens.GRCh38.79.bed"
+house="hg38.HouseKeepingGenes.chr.bed"
+read_len="101"
+
+qualimap multi-bamqc \
+--java-mem-size=20G \
+-c \
+-r \
+-d multi-bamqc_input.txt \
+-gff GCA_000001405.15_GRCh38_full_analysis_set.refseq_annotation.gff \
+-outdir human \
+-outfile qualimap_bamqc.pdf \
+-outformat HTML
+
+
+for i in *.bam
+do
+SampleName=`basename ${i/.bam/}`
+echo $SampleName
+
+echo qualimap
+qualimap rnaseq \
+--java-mem-size=20G \
+-p strand-specific-forward \
+-bam $i \
+-gtf Homo_sapiens.GRCh38.104.gtf \
+-outdir human \
+-outfile ${SampleName}_qualimap_rna.pdf
+
+echo clipping_profile
+clipping_profile.py -i  $i -s "SE" -o $SampleName
+
+echo infer_experiment
+infer_experiment.py -r $annot -i  $i 
+
+echo inner_distance
+inner_distance.py -i  $i -o $SampleName -r $annot
+
+echo junction_annotation
+junction_annotation.py -i  $i -o $SampleName -r $annot
+
+echo junction_saturation
+junction_saturation.py -i  $i -r $annot -o $SampleName
+
+echo mismatch_profile
+mismatch_profile.py -l $read_len -i  $i -o $SampleName
+
+echo read_distribution
+read_distribution.py -i  $i -r $annot > ${SampleName}.readDist.txt
+
+echo read_GC
+read_GC.py -i  $i -o $SampleName
+
+echo RPKM_saturation
+RPKM_saturation.py -r $annot -i $i -o $SampleName
+
+echo geneBody_coverage
+geneBody_coverage.py -r $house -o $SampleName -i $i 
+
+echo tin
+tin.py -i $i -r $annot > {$SampleName}.tin.txt
+
+done
+```
+
+# Quantification
+
+Human
+
+```{bash, eval = FALSE}
+module load HTSeq/0.12.3/python.2.7.8 
+
+for i in *.bam
+do
+SampleName=`basename ${i/.bam/}`
+echo $SampleName
+-n 4 \
+-f bam \
+-r pos \
+-s reverse \
+-t exon \
+-i gene \
+$i \
+GCA_000001405.15_GRCh38_full_analysis_set.refseq_annotation.gff \
+>${SampleName}_htseq_out.txt 2>${SampleName}_htseq_out_WARNINGS.txt
+
+done 
+```
+
+Toxoplasma
+
+```{bash, eval = FALSE}
+module load HTSeq/0.12.3/python.2.7.8 
+
+for i in *.bam
+do
+SampleName=`basename ${i/.bam/}`
+echo $SampleName
+-n 4 \
+-f bam \
+-r pos \
+-s reverse \
+-t exon \
+-i locus_tag \
+$i \
+GCF_000006565.2_TGA4_genomic.gff \
+>${SampleName}_htseq_out.txt 2>${SampleName}_htseq_out_WARNINGS.txt
+
+done
+```
+
+# Alignment tracks
+
+Human
+
+```{r, eval = FALSE}
+# calculate scaling factors
+library(DESeq2)
+library(EdgeR)
+
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                  directory = "Counts",
+                                  design = ~ 1)
+cnts <- counts(dds)
+## edgeR:: calcNormFactors using deseq RLE method
+NormFactor <- calcNormFactors(object = cnts, method = "RLE")
+## raw library size:
+LibSize <- colSums(cnts)
+## calculate scaling factors:
+SizeFactors <- NormFactor * LibSize / 1000000
+#    I1        I2        I3        U1        U2        U3 
+# 10.050143  8.702247  7.813568  7.351811  5.342507 12.582775 
+```
+
+```{bash, eval = FALSE}
+# generate tracks
+module load deeptools/3.1.0/python.2.7.8
+
+scaleFactor=(10.050143  8.702247  7.813568  7.351811  5.342507 12.582775)
+files=(ls *bam)
+
+for ((i = 0; i < ${#files[@]}; ++i))
+do echo ${files[$i]}
+
+bamCoverage -b ${files[$i]} \
+-o $(basename -- ${files[$i]}).for.bw \
+-of bigwig \
+-p 4 \
+--effectiveGenomeSize 2913022398 \
+--scaleFactor ${scaleFactor[$i]} \
+--filterRNAstrand forward
+
+bamCoverage -b ${files[$i]} \
+-o $(basename -- ${files[$i]}).rev.bw \
+-of bigwig \
+-p 4 \
+--effectiveGenomeSize 2913022398 \
+--scaleFactor ${scaleFactor[$i]}\
+--filterRNAstrand reverse
+
+done 
+```
+
+Toxoplasma
+
+```{r, eval = FALSE}
+# calculate scaling factors
+library(DESeq2)
+library(EdgeR)
+
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                  directory = "Counts",
+                                  design = ~ 1)
+cnts <- counts(dds)
+## edgeR:: calcNormFactors using deseq RLE method
+NormFactor <- calcNormFactors(object = cnts, method = "RLE")
+## raw library size:
+LibSize <- colSums(cnts)
+## calculate scaling factors:
+SizeFactors <- NormFactor * LibSize / 1000000
+
+#    I1        I2        I3    
+# 2.449926 2.676409 2.119584
+```
+
+-   Effective genome size was calculated using
+    [<https://khmer.readthedocs.io/en/v2.1.1/>](https://khmer.readthedocs.io/en/v2.1.1/){.uri}
+
+```{bash, eval = FALSE}
+# generate tracks
+module load deeptools/3.1.0/python.2.7.8
+
+scaleFactor=(2.449926 2.676409 2.119584)
+files=(ls *bam)
+
+for ((i = 0; i < ${#files[@]}; ++i))
+do echo ${files[$i]}
+
+bamCoverage -b ${files[$i]} \
+-o $(basename -- ${files[$i]}).for.bw \
+-of bigwig \
+-p 4 \
+--effectiveGenomeSize 62667338 \
+--scaleFactor ${scaleFactor[$i]} \
+--filterRNAstrand forward
+
+bamCoverage -b ${files[$i]} \
+-o $(basename -- ${files[$i]}).rev.bw \
+-of bigwig \
+-p 4 \
+--effectiveGenomeSize 62667338 \
+--scaleFactor ${scaleFactor[$i]}\
+--filterRNAstrand reverse
+
+done 
+```

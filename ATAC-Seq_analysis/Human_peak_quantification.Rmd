@@ -1,0 +1,151 @@
+---
+title: "Peak annotation and quantification of toxoplasma infection in human"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+Load libraries
+```{r}
+library(ChIPpeakAnno)
+library(org.Hs.eg.db)
+library(rtracklayer)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(Rsubread)
+library(GenomicAlignments)
+library(viridis)
+```
+
+Prepare annotation
+```{r}
+blkList <- import.bed("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/GRCh38/ENCFF356LFX.bed.gz")
+annoDataTxDb <- toGRanges(TxDb.Hsapiens.UCSC.hg38.knownGene)
+```
+
+# Overlap of peaks between replicates
+
+Infected
+```{r}
+# load peaks
+infected.peaks.1 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/I1.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.sorted.shift.bam.human.bam_peaks.narrowPeak", format="narrowPeak")
+infected.peaks.2 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/I2.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.sorted.shift.bam.human.bam_peaks.narrowPeak", format="narrowPeak")
+infected.peaks.3 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/I3.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.sorted.shift.bam.human.bam_peaks.narrowPeak", format="narrowPeak")
+
+ol <- findOverlapsOfPeaks(infected.peaks.2, infected.peaks.3, connectedPeaks = "keepAll")
+makeVennDiagram(ol, NameOfPeaks = c("I2", "I3"), fill = c("green", "blue"), fontfamily = "Arial", cex = 1.5, cat.cex = 2, cat.fontfamily = "Arial", cat.default.pos = "outer", print.mode	
+ = c('raw', 'percent'), sigdigs = 2, euler.d = TRUE)
+```
+
+Uninfected
+```{r}
+# load peaks
+uninfected.peaks.1 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/U1.bam.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.human.downsampled.bam_peaks.narrowPeak", format="narrowPeak")
+uninfected.peaks.2 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/U2.bam.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.human.downsampled.bam_peaks.narrowPeak", format="narrowPeak")
+uninfected.peaks.3 <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/U3.bam.sorted.bam.sorted.rmchrM.bam.sorted.rmDups.bam.filtered.bam.human.downsampled.bam_peaks.narrowPeak", format="narrowPeak")
+
+ol <- findOverlapsOfPeaks(uninfected.peaks.1, uninfected.peaks.2, uninfected.peaks.3, connectedPeaks = "keepAll")
+makeVennDiagram(ol, NameOfPeaks = c("U1", "U2", "U3"), fill = c("red", "green", "blue"), fontfamily = "Arial", cex = 1.5, cat.cex = 2, cat.fontfamily = "Arial", cat.default.pos = "outer", print.mode	
+ = c('raw', 'percent'), sigdigs = 2, euler.d = TRUE)
+```
+
+# Quantification
+
+Compare optimal peak files
+```{r}
+colors <- viridis(5)[c(1,5)]
+
+# load peaks
+infected.peaks <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/Infected_narrowPeak_optimal.bed", format="narrowPeak")
+uninfected.peaks <- toGRanges("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/Uninfected_narrowPeak_optimal.bed", format="narrowPeak")
+
+ol <- findOverlapsOfPeaks(infected.peaks, uninfected.peaks, connectedPeaks = "keepAll")
+makeVennDiagram(ol, NameOfPeaks = c("Infected", "Uninfected"), fontfamily = "Arial", cex = 1.5, cat.cex = 2, cat.fontfamily = "Arial", cat.default.pos = "outer", print.mode = c('raw', 'percent'), sigdigs = 2, euler.d = TRUE,
+                fill=c(colors[1], colors[2]))
+```
+
+Get non-redundant peaks from optimal peaks in uninfected and infected
+```{r}
+myPeaks <- list(Infected = infected.peaks, Uninfected = uninfected.peaks)
+allPeaksSet_nR <- reduce(unlist(GRangesList(myPeaks)))
+overlap <- list()
+for (i in 1:length(myPeaks)) {
+    overlap[[i]] <- allPeaksSet_nR %over% myPeaks[[i]]
+}
+overlapMatrix <- do.call(cbind, overlap)
+colnames(overlapMatrix) <- names(myPeaks)
+mcols(allPeaksSet_nR) <- overlapMatrix
+
+genomicElementDistribution(allPeaksSet_nR, 
+                           TxDb = TxDb.Hsapiens.UCSC.hg38.knownGene,
+                           promoterRegion=c(upstream=2000, downstream=100),
+                           geneDownstream=c(upstream=0, downstream=1000),
+                           promoterLevel=list(
+                         # from 5' -> 3', fixed precedence 3' -> 5'
+                             breaks = c(-5000, -1000, -500, 0, 500),
+                             labels = c("upstream 1-2Kb", "upstream 0.5-1Kb", 
+                                        "upstream <500b", "TSS - 500b"),
+                             colors = c("#FFE5CC", "#FFCA99", 
+                                        "#FFAD65", "#FF8E32")))
+```
+
+Annotate
+```{r}
+allPeaksSet_nR.annot <- allPeaksSet_nR
+
+# remove blacklisted peaks
+data.frame(Blacklisted = sum(allPeaksSet_nR.annot %over% blkList), Not_Blacklisted = sum(!allPeaksSet_nR.annot %over% blkList))
+allPeaksSet_nR.annot <- allPeaksSet_nR.annot[!allPeaksSet_nR.annot %over% blkList]
+
+# keep the seqnames in the same style
+if(!identical(seqlevelsStyle(allPeaksSet_nR.annot), seqlevelsStyle(annoDataTxDb))){
+  seqlevelsStyle(allPeaksSet_nR.annot) <- seqlevelsStyle(annoDataTxDb)[1]
+}
+
+# do annotation by nearest TSS of UCSC hg38 annotations
+allPeaksSet_nR.annot <- annotatePeakInBatch(allPeaksSet_nR.annot, AnnotationData=annoDataTxDb, select = "all", output= "overlapping", FeatureLocForDistance="TSS", PeakLocForDistance = "middle", bindingRegion = c(-5000, 5000))
+head(allPeaksSet_nR.annot, n=2)
+
+# add names
+allPeaksSet_nR.annot <- addGeneIDs(allPeaksSet_nR.annot,
+                            "org.Hs.eg.db",
+                            feature_id_type="entrez_id",
+                            IDs2Add = "symbol")
+head(allPeaksSet_nR.annot, n=2)
+
+# visualize annotation
+pie1(table(allPeaksSet_nR.annot$insideFeature))
+hist(allPeaksSet_nR.annot$distanceToSite)
+
+binOverFeature(allPeaksSet_nR.annot, annotationData=annoDataTxDb,
+               radius=5000, nbins=20, FUN=length, errFun=0,
+               ylab="count",
+               main="Distribution of aggregated peak numbers around TSS")
+
+# output annotation
+write.table(allPeaksSet_nR.annot, "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Peakcalling/Non-redundent_narrowPeak_optimal.chippeakanno.bed", sep = "\t", quote = FALSE)
+```
+
+Quantification
+```{r}
+bamsToCount <- dir("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Alignment", full.names = TRUE,
+    pattern = "*.\\.bam$")
+
+myCounts <- summarizeOverlaps(allPeaksSet_nR.annot, bamsToCount, singleEnd = FALSE, fragments=TRUE)
+
+colnames(myCounts) <- c("I1", "I2", "I3", "U1", "U2", "U3")
+```
+
+Export counts
+```{r}
+saveRDS(myCounts, file = "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Quantification/Non-redundent_narrowPeak_optimal.chippeakanno.rds")
+
+write.csv(cbind(rowData(myCounts), assay(myCounts)), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Quantification/Non-redundent_narrowPeak_optimal.chippeakanno.csv", quote = FALSE)
+```

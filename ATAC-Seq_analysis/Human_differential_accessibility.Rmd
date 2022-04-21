@@ -1,0 +1,729 @@
+---
+title: "Differential accessibility analysis of toxoplasma infection in human"
+author: "Ronald Cutler"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+# Loading libraries
+
+```{r, message=FALSE}
+library(DESeq2)
+library(vsn)
+library(affy)
+library(ggplot2)
+library(ggrepel)
+library(ggbio)
+library(factoextra)
+library(FactoMineR)
+library(reshape2)
+library(biomaRt)
+library(EnhancedVolcano)
+library(viridis)
+library(ComplexHeatmap)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(pheatmap)
+library(tracktables)
+library(dplyr)
+library(plyr)
+library(ChIPpeakAnno)
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(GenomicFeatures)
+library(GenomicRanges)
+library(rtracklayer)
+library(GenomicDistributions)
+
+colors <- viridis(6)[c(1,6)]
+```
+
+## Loading ATAC-Seq quantification
+
+```{r}
+# read in RangedSummarizedExperiment
+cnts <- readRDS("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Quantification/Non-redundent_narrowPeak_optimal.rds")
+rownames(cnts) <- rowData(cnts)$symbol
+
+sampleTable <- data.frame(condition = factor(c(rep("Infected", 3), rep("Uninfected", 3))), row.names = colnames(cnts))
+
+dds <- DESeqDataSetFromMatrix(countData = assay(cnts),
+                              colData = sampleTable,
+                              design = ~condition,
+                              rowRanges = rowRanges(cnts))
+# set control
+dds$condition <- relevel(dds$condition, ref = "Uninfected")
+```
+
+# Pre-processing
+
+Unnormalized count distribution
+
+-   No filtering required as distribution shows minimal low values
+
+```{r}
+# total counts
+barplot(colSums(counts(dds)),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Counts",
+        main = "Total Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# Unique regions
+barplot(colSums(counts(dds)>0),
+        horiz = TRUE,
+        col = colors[colData(dds)$condition],
+        las = 1,
+        xlab = "Unique Regions",
+        main = "Regions detected")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# plotting an unnormalized density plot of the log transformed counts 
+plotDensity(log2(counts(dds) + 1),
+            lty=1,
+            col=colors[colData(dds)$condition],
+            lwd=1,
+            xlab = "log2(Counts + 1)", 
+            main = "Raw Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# plotting an unnormalized box plot of the log transformed counts 
+boxplot(log2(counts(dds) + 1),
+        col = colors[colData(dds)$condition],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Raw Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+```
+
+## Running DESeq
+
+```{r}
+# Run DESeq
+dds <- DESeq(dds)
+
+# output normalized counts
+write.csv(counts(dds, normalize = TRUE), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Differential\ Accessibility/DESeq2_normalized_counts_ATAC.csv", row.names = TRUE)
+```
+
+Normalized count distribution
+
+```{r}
+# density plot normalized
+plotDensity(log2(counts(dds, normalized = TRUE) + 1),
+            lty=1,
+            col=colors[colData(dds)$condition],
+            lwd=1,
+            xlab = "log2(Counts + 1)",
+            main = "Normalized Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+
+# box plot normalized
+boxplot(log2(counts(dds, normalized = TRUE) + 1),
+        col = colors[colData(dds)$condition],
+        cex.axis = 0.5,
+        las = 1,
+        horizontal = TRUE,
+        xlab = "log2(Counts + 1)",
+        ylab = "Samples",
+        main = "Normalized Counts")
+legend("topright",
+       legend=levels(colData(dds)$condition),
+       lwd=1, col = colors)
+```
+
+## Principle Component Analysis
+
+PCA clustering and plotting function
+
+```{r}
+# PCA plot of samples
+PCAPlotter <- function(ntop, vsd, shape) {
+  # getting most variable genes 
+  Pvars <- rowVars(assay(vsd))
+  select <- order(Pvars, decreasing = TRUE)[seq_len(min(ntop, 
+          length(Pvars)))]
+  sampleNO <- rownames(colData(vsd))
+
+  # calculate pca - zero centering variables and scaling where all   variables have unit variance
+  PCA <- prcomp(t(assay(vsd)[select, ]), scale = T, center = TRUE)
+  percentVar <- round(100*PCA$sdev^2/sum(PCA$sdev^2),1)
+  dataGG = data.frame(PC1 = PCA$x[,1], PC2 = PCA$x[,2], 
+                      PC3 = PCA$x[,3], PC4 = PCA$x[,4], 
+                      condition = colData(vsd)$condition)
+  # plotting
+  print(ggplot(data = dataGG) +
+        geom_point(data = dataGG, mapping = aes(x = PC1, y = PC2, color =  condition, shape = shape), size = 6) +
+        scale_shape_identity() +
+  	    labs(title = paste("PC1 vs PC2, Top", toString(ntop), "Variable Peaks"),
+        x = paste0("PC1: ", round(percentVar[1],4), "%"),
+        y = paste0("PC2: ", round(percentVar[2],4), "%")) +
+  	    #scale_colour_brewer(type="qual", palette=2) +
+        scale_colour_viridis(discrete=TRUE) +
+  	    theme_classic() +
+  	    #scale_color_discrete(name = "Condition") +
+  	    theme(axis.text = element_text(size = 15),
+  	    legend.box = "horizontal",
+        axis.title.y = element_text(size = 15, face = "bold"),
+        axis.title.x = element_text(size = 15, face = "bold"),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.background = element_blank(),
+        legend.box.background = element_rect(colour = "black"),
+        legend.position = "top") +
+  	    geom_label_repel(aes(label = sampleNO, x = PC1, y = PC2), color = "black") +
+        guides(colour = guide_legend(override.aes = list(shape = shape))))
+                                     
+  PCA$rotation
+  PCA$sdev
+  return(PCA)
+}
+```
+
+## Plot PCA
+
+-   Using different number of variable genes to see how stable
+    clustering is
+
+```{r}
+dds_vst <- vst(dds)
+
+PCA <- PCAPlotter(500, dds_vst, 15)
+PCA <- PCAPlotter(1000, dds_vst, 15)
+PCA <- PCAPlotter(5000, dds_vst, 15)
+PCA <- PCAPlotter(nrow(dds), dds_vst, 15)
+
+PCA <- PCAPlotter(5000, dds_vst, 15)
+
+# get importance of each component
+fviz_eig(PCA, addlabels = TRUE)
+
+var <- get_pca_var(PCA)
+# contributions of individual genes to each PC
+fviz_contrib(PCA, choice = "var", axes = 1, top = 20, rotate = TRUE, sort.val = "asc")
+fviz_contrib(PCA, choice = "var", axes = 2, top = 20, rotate = TRUE, sort.val = "asc")
+
+# contributions of individual samples to each PC 
+fviz_contrib(PCA, choice = "ind", axes = 1, top = 20, rotate = TRUE, sort.val = "asc")
+fviz_contrib(PCA, choice = "ind", axes = 2, top = 20, rotate = TRUE, sort.val = "asc")
+```
+
+## Heatmap of the sample-to-sample distances
+
+```{r}
+sampleDists <- dist(t(assay(dds_vst)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colnames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colors <- magma(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+# Removing I1 replicate
+
+-   Excluding I1 replicate as this deemed an outlier based on PCA and
+    having low number of toxoplasma reads comapred to other replicates
+
+```{r}
+cnts <- cnts[,-c(1)]
+
+sampleTable <- data.frame(condition = factor(c(rep("Infected", 2), rep("Uninfected", 3))), row.names = colnames(cnts))
+
+colors <- viridis(6)[c(1,5)]
+
+dds <- DESeqDataSetFromMatrix(countData = assay(cnts),
+                              colData = sampleTable,
+                              design = ~condition,
+                              rowRanges = rowRanges(cnts))
+# set control
+dds$condition <- relevel(dds$condition, ref = "Uninfected")
+
+dds <- DESeq(dds)
+```
+
+## Mean Variance Relationship
+
+```{r}
+## Computing mean and variance
+norm.counts <- counts(dds, normalized=TRUE) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="Mean-variance relationship", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+abline(a=1, b=1, col="red") # a linear line to compare against
+```
+
+## Transform counts to stabilize mean-variance for clustering
+
+Using two transformations in order to stabilize the mean-variance
+relationship in order to minimize the influence of genes with low read
+counts when performing unsupervised analysis.
+
+```{r}
+dds_rlog <- rlog(dds)
+dds_vst <- vst(dds)
+```
+
+Log2 transformed counts just for comparison
+
+```{r}
+dds_log2 <- log2(counts(dds) + 1)
+meanSdPlot(dds_log2)
+```
+
+Compare rlog and vst transformations. 
+
+```{r}
+meanSdPlot(assay(dds_rlog))
+meanSdPlot(assay(dds_vst))
+
+## better plot 
+norm.counts <- assay(dds) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="Non-transformed", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+
+## better plot 
+norm.counts <- assay(dds_vst) 
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, MARGIN = 1, var)
+## Mean and variance relationship
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts)) 
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5,
+col=mean.var.col, main="VST transformed", xlab="Mean log2(normalized counts) per gene", ylab="Variance of log2(normalized counts)", panel.first = grid())
+
+write.csv(assay(dds_vst), "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Differential\ Accessibility//DESeq2_vst_counts_ATAC.csv", row.names = TRUE)
+```
+
+## Plot PCA
+
+-   Using different number of variable genes to see how stable
+    clustering is
+
+```{r}
+PCA <- PCAPlotter(500, dds_vst, 15)
+PCA <- PCAPlotter(1000, dds_vst, 15)
+PCA <- PCAPlotter(5000, dds_vst, 15)
+PCA <- PCAPlotter(nrow(dds), dds_vst, 15)
+
+PCA <- PCAPlotter(5000, dds_vst, 15)
+
+# get importance of each component
+fviz_eig(PCA, addlabels = TRUE)
+
+var <- get_pca_var(PCA)
+# contributions of individual genes to each PC
+fviz_contrib(PCA, choice = "var", axes = 1, top = 20, rotate = TRUE, sort.val = "asc")
+fviz_contrib(PCA, choice = "var", axes = 2, top = 20, rotate = TRUE, sort.val = "asc")
+
+# contributions of individual samples to each PC 
+fviz_contrib(PCA, choice = "ind", axes = 1, top = 20, rotate = TRUE, sort.val = "asc")
+fviz_contrib(PCA, choice = "ind", axes = 2, top = 20, rotate = TRUE, sort.val = "asc")
+```
+
+## Heatmap of the sample-to-sample distances
+
+```{r}
+sampleDists <- dist(t(assay(dds_vst)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colnames(sampleDistMatrix) <- paste(colnames(dds_vst))
+colors <- magma(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+# Differential Accessibility Results
+
+Output function
+
+```{r}
+writeOutput <- function(res, cond, dir) {
+  resOrdered <- res[order(res$padj),]
+  outfile <- paste(cond[1], cond[length(cond)], "DESeq2.csv", sep = "_")
+  outfile <- paste(dir, outfile, sep = "")
+  write.csv(as.data.frame(resOrdered), file = outfile, row.names = TRUE)
+}
+
+# setting output dir
+dir <- "/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Human/ATAC-Seq/Differential\ Accessibility/"
+```
+
+## Infected vs Uninfected
+
+```{r}
+res <- results(dds, alpha = 0.05, name = "condition_Infected_vs_Uninfected")
+res.granges <- results(dds, alpha = 0.05, name = "condition_Infected_vs_Uninfected", format = "GRanges")
+
+# p-value distribution histogram
+hist(res.granges$pvalue, main = "P-value distribution", xlab = "P-value", ylab = "Frequency", col = "lavender")
+
+summary(res, alpha = 0.05)
+
+# ma plot
+plotMA(res)
+
+# get shrunken fold change
+res.lfcShrink <- lfcShrink(dds = dds, res = res, contrast = c("condition", "Infected", "Uninfected"),  type = "ashr")
+
+res.lfcShrink.granges <- lfcShrink(dds = dds, res = res, contrast = c("condition", "Infected", "Uninfected"),  type = "ashr", format = "GRanges")
+
+summary(res.lfcShrink, alpha = 0.05)
+
+# ma plot
+plotMA(res.lfcShrink)
+
+# look at most differentially accessible
+plotCounts(dds, gene=which.min(res$padj), intgroup="condition")
+
+# add counts
+res.lfcShrink.granges@elementMetadata <- cbind(res.lfcShrink.granges@elementMetadata, counts(dds, normalized = TRUE))
+
+writeOutput(res.lfcShrink.granges, c("Uninfected", "Infected_ALL"), dir)
+```
+
+### Unannotated results
+
+MA plot
+
+```{r}
+cutoff <- sort(res.lfcShrink.granges$padj)[20]
+df <- as.data.frame(res.lfcShrink.granges)
+
+ggplot(df, aes(x = log2(baseMean), y=log2FoldChange)) + 
+    geom_point(aes(colour=padj < 0.05), shape=20, size=0.5) +
+    labs(x="mean of normalised counts", y="log fold change") +
+    ylim(-2, 6) +
+    theme_classic()
+```
+
+Volcano plot
+
+```{r}
+EnhancedVolcano(res, 
+                lab = "",
+                x = 'log2FoldChange', y = 'pvalue', xlim = c(-2.5, 6),
+                pCutoff = 0.05, pCutoffCol = "padj",
+                FCcutoff = 2, drawConnectors = TRUE,
+                maxoverlapsConnectors = Inf,
+                title = "",
+                subtitle = "",
+                gridlines.minor = FALSE, gridlines.major = FALSE,
+                col=c('black', 'black', 'black', 'red3'),
+                raster = TRUE)
+```
+
+Heatmap
+
+```{r}
+# omit NAs 
+res <- na.omit(res)
+# set up matrix
+dds_vst.mat <- as.matrix(assay(dds_vst))
+dds_vst.mat <- dds_vst.mat[,c(3,4,5,1,2)]
+# getting differentially expressed genes 
+dds_vst.mat.DE <- dds_vst.mat[which(res$padj < 0.05),]
+
+colors <- viridis(5)[c(1,5)]
+col <- list(Condition = c(
+            "Uninfected" = colors[1],
+            "Infected" = colors[2]))
+
+condition <- factor(c(rep("Uninfected", 3), rep("Infected", 2)), levels = c("Uninfected", "Infected"))
+ha <- HeatmapAnnotation(Condition = condition, col = col)
+
+scaled.mat <- t(scale(t(dds_vst.mat.DE),center=TRUE,scale=TRUE))
+
+Heatmap(scaled.mat,
+        name = "Z-score", #title of legend
+        #col=magma(100),
+        row_names_gp = gpar(fontsize = 7), # Text size for row names
+        top_annotation = ha,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = FALSE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(20, "mm"))
+```
+
+Plot accessibility changes over chromosomes
+
+```{r}
+res.lfcShrink.granges.plot <- res.lfcShrink.granges
+mcols(res.lfcShrink.granges.plot)$score <- -log10(res.lfcShrink.granges.plot$padj)
+res.lfcShrink.granges.plot <- keepSeqlevels(res.lfcShrink.granges.plot, pruning.mode = "tidy", c(paste0("chr", 1:21),  "chrX", "chrY"))
+
+plotGrandLinear(res.lfcShrink.granges.plot, aes(y = score), color = turbo(2),
+cutoff = -log10(0.05), cutoff.color = "black", cutoff.size = 1, ylab = "-log10(padj)", spaceline = TRUE, highlight.label.size = 3, highlight.label.offset = 0.01) +
+theme(axis.text.x=element_text(angle=45, hjust=1))
+
+autoplot(res.lfcShrink.granges.plot[res.lfcShrink.granges.plot$padj < 0.05,], layout="karyogram", aes(color = log2FoldChange, fill = log2FoldChange)) +
+  scale_color_gradient(low="blue", high="red") +
+  scale_fill_gradient(low="blue", high="red")
+```
+
+Review peak results in IGV
+
+```{r}
+res.lfcShrink.granges <- res.lfcShrink.granges[order(res.lfcShrink.granges$padj),]
+makebedtable(res.lfcShrink.granges, "res.lfcShrink.granges.html", dir)
+```
+
+Plot distribution over features
+
+```{r}
+if(require(TxDb.Hsapiens.UCSC.hg38.knownGene)){
+    aCR<-assignChromosomeRegion(res.lfcShrink.granges[res.lfcShrink.granges$padj < 0.05,], nucleotideLevel=FALSE, 
+                           precedence=c("Promoters", "immediateDownstream", 
+                                         "fiveUTRs", "threeUTRs", 
+                                         "Exons", "Introns"), 
+                           TxDb=TxDb.Hsapiens.UCSC.hg38.knownGene)
+    barplot(aCR$percentage)
+    pie1(aCR$percentage)
+}
+```
+
+Plot distance of DAR to TSS
+
+```{r}
+res.lfcShrink.granges.ChIPseeker <- annotatePeak(res.lfcShrink.granges[res.lfcShrink.granges$padj < 0.05], tssRegion = c(-5000, 5000), flankDistance = 5000, TxDb=TxDb.Hsapiens.UCSC.hg38.knownGene, annoDb = "org.Hs.eg.db", overlap = "TSS", level = "gene")
+res.lfcShrink.granges.ChIPseeker.background <- annotatePeak(res.lfcShrink.granges[res.lfcShrink.granges$padj > 0.05], tssRegion = c(-5000, 5000), flankDistance = 5000, TxDb=TxDb.Hsapiens.UCSC.hg38.knownGene, annoDb = "org.Hs.eg.db", overlap = "TSS", level = "gene")
+
+plotFeatureDist(res.lfcShrink.granges.ChIPseeker@anno$distanceToTSS, featureName="TSS", nbins = 20)
+plotFeatureDist(res.lfcShrink.granges.ChIPseeker.background@anno$distanceToTSS, featureName="TSS", nbins = 20)
+```
+
+
+### Annotate results
+
+```{r, message=FALSE}
+blkList <- import.bed("/Volumes/GoogleDrive/My\ Drive/Greally_Lab/Toxoplasma/Genomes/GRCh38/ENCFF356LFX.bed.gz")
+annoDataTxDb <- toGRanges(TxDb.Hsapiens.UCSC.hg38.knownGene)
+
+res.lfcShrink.granges.annot <- res.lfcShrink.granges
+
+# remove blacklisted peaks
+res.lfcShrink.granges.annot <- res.lfcShrink.granges.annot[!res.lfcShrink.granges.annot %over% blkList]
+
+# keep the seqnames in the same style
+if(!identical(seqlevelsStyle(res.lfcShrink.granges.annot), seqlevelsStyle(annoDataTxDb))){
+  seqlevelsStyle(res.lfcShrink.granges.annot) <- seqlevelsStyle(annoDataTxDb)[1]}
+
+# do annotation by nearest TSS of UCSC hg38 annotations
+res.lfcShrink.granges.annot <- annotatePeakInBatch(res.lfcShrink.granges.annot, AnnotationData=annoDataTxDb, select = "all", output= "overlapping", FeatureLocForDistance="TSS", PeakLocForDistance = "middle", bindingRegion = c(-5000, 5000))
+head(res.lfcShrink.granges.annot, n=2)
+
+# get distance of DARs from TSS
+res.lfcShrink.granges.DAR <- annotatePeakInBatch(res.lfcShrink.granges[res.lfcShrink.granges$padj < 0.05,], AnnotationData=annoDataTxDb, select = "first", output= "nearestLocation", FeatureLocForDistance="TSS", PeakLocForDistance = "middle", bindingRegion = c(-100000, 100000))
+hist(res.lfcShrink.granges.DAR$distancetoFeature)
+binOverFeature(res.lfcShrink.granges.DAR, annotationData=annoDataTxDb,
+               radius=100000, nbins=20, FUN=length, errFun=0,
+               select = "nearest",
+               ylab="# DARs",
+               xlab="Distance from TSS",
+               main="Distribution of DARs around TSS")
+
+# add names
+res.lfcShrink.granges.annot <- addGeneIDs(res.lfcShrink.granges.annot,
+                            "org.Hs.eg.db",
+                            feature_id_type="entrez_id",
+                            IDs2Add = "symbol")
+head(res.lfcShrink.granges.annot, n=2)
+
+# visualize annotation
+pie1(table(res.lfcShrink.granges.annot$insideFeature))
+hist(res.lfcShrink.granges.annot$distanceToSite)
+
+binOverFeature(res.lfcShrink.granges.annot, annotationData=annoDataTxDb,
+               radius=100000, nbins=100, FUN=length, errFun=0,
+               select = "nearest",
+               ylab="# Peaks",
+               xlab="Distance from TSS",
+               main="Distribution of peaks around TSS")
+
+if(require(TxDb.Hsapiens.UCSC.hg38.knownGene)){
+    aCR<-assignChromosomeRegion(res.lfcShrink.granges.annot, nucleotideLevel=FALSE, 
+                           precedence=c("Promoters", "immediateDownstream", 
+                                         "fiveUTRs", "threeUTRs", 
+                                         "Exons", "Introns"), 
+                           TxDb=TxDb.Hsapiens.UCSC.hg38.knownGene)
+    barplot(aCR$percentage)
+}
+
+# remaining significant DA genes
+length(res.lfcShrink.granges.annot[res.lfcShrink.granges.annot$padj < 0.05 & res.lfcShrink.granges.annot$log2FoldChange > 0,])
+length(res.lfcShrink.granges.annot[res.lfcShrink.granges.annot$padj < 0.05 & res.lfcShrink.granges.annot$log2FoldChange < 0,])
+
+# write output
+names(res.lfcShrink.granges.annot) <- NULL
+writeOutput(res.lfcShrink.granges.annot, c("Uninfected", "Infected"), dir)
+```
+
+Review annotated results in IGV
+
+```{r}
+names(res.lfcShrink.granges.annot) <- NULL
+res.lfcShrink.granges.annot.bed <- res.lfcShrink.granges.annot
+res.lfcShrink.granges.annot.bed$baseMean <- NULL
+res.lfcShrink.granges.annot.bed$peak <- NULL
+res.lfcShrink.granges.annot.bed$pvalue <- NULL
+res.lfcShrink.granges.annot.bed <- res.lfcShrink.granges.annot.bed[order(res.lfcShrink.granges.annot.bed$padj),]
+makebedtable(res.lfcShrink.granges.annot.bed, "res.lfcShrink.granges.annot.html", dir)
+```
+
+MA Plot of annotated results
+
+```{r}
+cutoff <- sort(res.lfcShrink.granges.annot$padj)[20]
+df <- as.data.frame(res.lfcShrink.granges.annot) %>% 
+    mutate(TopGeneLabel=ifelse(padj<=cutoff, symbol, ""))
+
+ggplot(df, aes(x = log2(baseMean), y=log2FoldChange)) + 
+    geom_point(aes(colour=padj < 0.05), shape=20, size=0.5) +
+    geom_label_repel(aes(label=TopGeneLabel)) +
+    labs(x="mean of normalised counts", y="log fold change") +
+    ylim(-2, 6) +
+    theme_classic()
+```
+
+Volcano plot of annotated results
+
+```{r}
+EnhancedVolcano(mcols(res.lfcShrink.granges.annot), 
+                lab = mcols(res.lfcShrink.granges.annot)$symbol,
+                x = 'log2FoldChange', y = 'pvalue', xlim = c(-2.5, 6),
+                pCutoff = 0.05, pCutoffCol = "padj",
+                FCcutoff = 2, drawConnectors = TRUE,
+                title = "",
+                subtitle = "",
+                gridlines.minor = FALSE, gridlines.major = FALSE,
+                col=c('black', 'black', 'black', 'red3'))
+```
+
+Heatmap of annotated peaks
+
+```{r}
+# set up matrix
+dds_vst.mat <- as.matrix(mcols(res.lfcShrink.granges.annot[,c("I2", "I3", "U1", "U2", "U3")]))
+rownames(dds_vst.mat) <- res.lfcShrink.granges.annot$symbol
+dds_vst.mat <- dds_vst.mat[,c(3,4,5,1,2)]
+# getting differentially expressed genes 
+dds_vst.mat.DE <- dds_vst.mat[which(mcols(res.lfcShrink.granges.annot)$padj < 0.05),]
+
+colors <- viridis(5)[c(1,5)]
+col <- list(Condition = c(
+            "Uninfected" = colors[1],
+            "Infected" = colors[2]))
+
+condition <- factor(c(rep("Uninfected", 3), rep("Infected", 2)), levels = c("Uninfected", "Infected"))
+ha <- HeatmapAnnotation(Condition = condition, col = col)
+
+scaled.mat <- t(scale(t(dds_vst.mat.DE),center=TRUE,scale=TRUE))
+
+Heatmap(scaled.mat,
+        name = "Z-score", #title of legend
+        #col=magma(100),
+        row_names_gp = gpar(fontsize = 7), # Text size for row names
+        top_annotation = ha,
+        border = TRUE,
+        cluster_rows = TRUE,
+        cluster_columns = FALSE,
+        show_row_names = TRUE,
+        column_names_rot = 0,
+        show_parent_dend_line = FALSE,
+        row_dend_width = unit(20, "mm"))
+```
+
+Plot accessibility changes over chromosomes
+
+```{r}
+res.lfcShrink.granges.plot <- res.lfcShrink.granges.annot
+mcols(res.lfcShrink.granges.plot)$score <- -log10(res.lfcShrink.granges.plot$padj)
+res.lfcShrink.granges.plot <- keepSeqlevels(res.lfcShrink.granges.plot, pruning.mode = "tidy", c(paste0("chr", 1:21),  "chrX", "chrY"))
+label <- res.lfcShrink.granges.plot[res.lfcShrink.granges.plot$padj < 0.05]
+
+plotGrandLinear(res.lfcShrink.granges.plot, aes(y = score), color = turbo(2),
+cutoff = -log10(0.05), cutoff.color = "black", cutoff.size = 1, ylab = "-log10(padj)", spaceline = TRUE, highlight.label.size = 3,
+highlight.gr = label, highlight.name = 'symbol') +
+theme(axis.text.x=element_text(angle=45, hjust=1))
+
+autoplot(res.lfcShrink.granges.plot[res.lfcShrink.granges.plot$padj < 0.05,], layout="karyogram", aes(color = log2FoldChange, fill = log2FoldChange)) +
+  scale_fill_viridis_c(option = "magma") +
+  scale_color_viridis_c(option = "magma")
+```
+
+Volcano plot of all peaks with annotated peaks labeled
+
+```{r}
+# merge
+res.lfcShrink.granges.merge <- rbind.fill(as.data.frame(mcols(res.lfcShrink.granges)), as.data.frame(mcols(res.lfcShrink.granges.annot)))
+
+keyvals <- ifelse(
+    res.lfcShrink.granges.merge$log2FoldChange < -2, colors[1],
+    ifelse(res.lfcShrink.granges.merge$log2FoldChange > 2, colors[2],
+    'black'))
+keyvals[is.na(keyvals)] <- 'black'
+  
+EnhancedVolcano(res.lfcShrink.granges.merge,
+  lab = res.lfcShrink.granges.merge$symbol,
+  x = 'log2FoldChange',
+  y = 'pvalue',
+  pCutoffCol = 'padj',
+  pCutoff = 0.05,
+  FCcutoff = 2,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  pointSize = 3.0,
+  labSize = 4.0,
+  labCol = 'black',
+  labFace = 'bold',
+  boxedLabels = FALSE,
+  colAlpha = 4/5,
+  drawConnectors = TRUE,
+  widthConnectors = 1.0,
+  colConnectors = 'black',
+  legendPosition= 'none',
+  subtitle = NULL,
+  #colCustom = keyvals,
+  col=c('black', 'black', 'black', colors[2]),
+  title = NULL,
+  caption = NULL)
+```
