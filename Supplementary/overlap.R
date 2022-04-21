@@ -5,7 +5,7 @@
 ## Created  7 April 2022 
 ## Last updated 21 April 2022
 
-## Notes: Used for Figure for Toxo 2F and supplement
+## Notes: Used for Figure for Toxo 2F 
 
 # Make proportional Venn Diagram
 
@@ -39,18 +39,6 @@ dev.off()
 
 # tried venneuler but looked inaccurate
 ## ---------------------------------------------------------------------------------
-
-# Supplement
-setwd("~/Dropbox (EinsteinMed)/GreallyLab/Toxoplasma/Manuscript/Supplementary/Supplementary figures/")
-
-# Input in the form of a named numeric vector
-fit2 <- euler(c("I1" = 192, "I2" = 198, "I3" = 117,
-                "I1&I2" = 281, "I1&I3" =82, "I2&I3" = 99,
-                "I1&I2&I3" = 6191),
-              shape = "ellipse")
-pdf("S5_Prop.pdf", width=10, height=10)
-plot(fit2, quantities = TRUE)
-dev.off()
 
 
 
