@@ -1,6 +1,6 @@
 ## ---------------------------------------------------------------------------------
 
-## Figure for Toxo 2F
+## Figure for Supplementary Figure 5
 ## Author: Reanna Dona
 ## Created  7 April 2022 
 ## Last updated 21 April 2022
