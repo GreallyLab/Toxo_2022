@@ -1,6 +1,6 @@
 ## ---------------------------------------------------------------------------------
 
-## Figure for Supplementary Figure 5
+## Figure for Toxo 2F
 ## Author: Reanna Dona
 ## Created  7 April 2022 
 ## Last updated 21 April 2022
@@ -22,10 +22,10 @@ setwd("~/Dropbox (EinsteinMed)/GreallyLab/Toxoplasma/Manuscript/Supplementary/Su
 
 library(ggplot2)
 
-# 8870 genes total in toxo genome
+# 8899 genes total in toxo genome
 # 6653 genes are within two
 # 6191 genes are expressed in all three
-Undetected <- 8870-6653
+Undetected <- 8899-6653
 Within2 <- 6655-6191 
 Within3 <- 6191
 
